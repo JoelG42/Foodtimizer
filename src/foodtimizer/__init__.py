@@ -14,6 +14,7 @@ from .model import (
     TagConstraints,
 )
 from .optimizer import optimize
+from .replan import plan_remaining
 from .tracker import (
     DayLog,
     LogEntry,
@@ -38,6 +39,7 @@ __all__ = [
     "TagConstraints",
     "load_problem",
     "optimize",
+    "plan_remaining",
     # Tracker
     "DayLog",
     "LogEntry",

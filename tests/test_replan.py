@@ -1,0 +1,305 @@
+"""Tests for combining the tracker with the optimizer (``plan_remaining``).
+
+These exercise the *math* of subtracting consumed macros / grams from the
+problem before optimizing, not the Streamlit UI.
+"""
+
+from __future__ import annotations
+
+import math
+from datetime import date
+
+import pytest
+
+from foodtimizer import (
+    DayLog,
+    Ingredient,
+    IngredientBound,
+    LibraryMeal,
+    LogEntry,
+    MacroTarget,
+    MealIngredient,
+    Problem,
+    TagConstraints,
+    plan_remaining,
+)
+from foodtimizer.replan import LOGGED_MEAL_LABEL
+
+
+def _basic_problem() -> Problem:
+    """Two ingredients, two soft macro targets, two interchangeable meals."""
+    chicken = Ingredient(
+        name="chicken", macros={"kcal": 100.0, "protein": 20.0, "carbs": 0.0}
+    )
+    rice = Ingredient(
+        name="rice", macros={"kcal": 350.0, "protein": 9.0, "carbs": 77.0}
+    )
+    meal = LibraryMeal(
+        name="ck", tag="lunch_dinner", ingredients=("chicken", "rice")
+    )
+    return Problem(
+        ingredients=(chicken, rice),
+        targets=(
+            MacroTarget(name="kcal", value=600.0, weight=1.0),
+            MacroTarget(name="protein", value=40.0, weight=100.0),
+        ),
+        meal_library=(meal,),
+    )
+
+
+def test_consumed_reduces_macro_target():
+    """If you already ate 300 kcal toward a 600-kcal goal, the optimizer
+    should plan ~300 kcal of remaining food, not 600."""
+    problem = _basic_problem()
+    log = DayLog(log_date=date(2026, 5, 18)).with_added(
+        # chicken @ 100 kcal/100g -> 300 g = 300 kcal, 60 g protein
+        LogEntry(ingredient="chicken", grams=300.0, slot="breakfast")
+    )
+    plan = plan_remaining(problem, log, {"lunch": "ck"})
+
+    # macro totals = logged + optimized; should land near the original 600 kcal
+    assert math.isclose(plan.macro_totals["kcal"], 600.0, abs_tol=1.0)
+
+    # And the *optimized* portion only (everything not labelled (logged))
+    # should contribute ~300 kcal.
+    optimized_kcal = sum(
+        it.grams * problem.ingredient_by_name(it.ingredient).amount_for("kcal") / 100.0
+        for it in plan.items
+        if it.meal != LOGGED_MEAL_LABEL
+    )
+    assert math.isclose(optimized_kcal, 300.0, abs_tol=1.0)
+
+
+def test_logged_items_are_returned_with_special_meal_label():
+    """The combined plan exposes logged entries as PlanItems so a UI
+    can render eaten + planned together."""
+    problem = _basic_problem()
+    log = (
+        DayLog(log_date=date(2026, 5, 18))
+        .with_added(LogEntry(ingredient="rice", grams=100, slot="breakfast"))
+        .with_added(LogEntry(ingredient="chicken", grams=150))  # no slot
+    )
+    plan = plan_remaining(problem, log, {"lunch": "ck"})
+
+    logged = [it for it in plan.items if it.meal == LOGGED_MEAL_LABEL]
+    optimized = [it for it in plan.items if it.meal != LOGGED_MEAL_LABEL]
+
+    assert len(logged) == 2
+    # The first logged item has its original slot, the second falls back
+    # to the generic "logged" slot.
+    assert logged[0].slot == "breakfast"
+    assert logged[0].ingredient == "rice"
+    assert logged[0].grams == 100
+    assert logged[1].slot == "logged"
+    assert logged[1].ingredient == "chicken"
+    assert logged[1].grams == 150
+
+    # The optimized half exists separately.
+    assert optimized
+    assert all(it.slot == "lunch" for it in optimized)
+
+
+def test_no_remaining_slots_just_reports_logged_totals():
+    """Calling with an empty plan returns a no-op result that still
+    reports what's been eaten and how it compares to targets."""
+    problem = _basic_problem()
+    log = DayLog(log_date=date(2026, 5, 18)).with_added(
+        LogEntry(ingredient="chicken", grams=200)
+    )
+    plan = plan_remaining(problem, log, {})
+
+    # No optimization happened: status is informational, no items beyond logged.
+    assert plan.status.startswith("OK")
+    assert {it.meal for it in plan.items} == {LOGGED_MEAL_LABEL}
+
+    # 200 g chicken -> 200 kcal, 40 g protein
+    assert math.isclose(plan.macro_totals["kcal"], 200.0)
+    assert math.isclose(plan.macro_totals["protein"], 40.0)
+    # Deviation vs the ORIGINAL 600/40 targets.
+    assert math.isclose(plan.target_deviations["kcal"], -400.0)
+    assert math.isclose(plan.target_deviations["protein"], 0.0)
+
+
+def test_overshoot_keeps_problem_feasible():
+    """Already exceeding a soft target shouldn't make the LP infeasible.
+
+    The remaining target is clamped to 0 and the optimizer pays a slack
+    penalty for unavoidable overshoot from per-meal minima.
+    """
+    problem = _basic_problem()
+    log = DayLog(log_date=date(2026, 5, 18)).with_added(
+        # 800 g chicken -> 800 kcal (already over the 600 target)
+        LogEntry(ingredient="chicken", grams=800)
+    )
+    plan = plan_remaining(problem, log, {"lunch": "ck"})
+
+    assert not plan.status.startswith("FAILED")
+    # Combined kcal is at least what we ate.
+    assert plan.macro_totals["kcal"] >= 800.0 - 1e-6
+
+
+def test_total_max_shrinks_by_consumed_grams():
+    """A daily ``total_max`` cap should account for what's already eaten:
+    eating 50 g whey before lunch must reduce the cap available to the
+    remaining slots by 50 g.
+    """
+    whey = Ingredient(name="whey", macros={"kcal": 400.0, "protein": 75.0})
+    rice = Ingredient(name="rice", macros={"kcal": 350.0, "carbs": 77.0})
+    meal = LibraryMeal(name="m", tag="lunch_dinner", ingredients=("whey", "rice"))
+    problem = Problem(
+        ingredients=(whey, rice),
+        targets=(MacroTarget(name="protein", value=100.0, weight=100.0),),
+        meal_library=(meal,),
+        bounds={"whey": IngredientBound(total_max=60.0)},
+    )
+
+    log = DayLog(log_date=date(2026, 5, 18)).with_added(
+        LogEntry(ingredient="whey", grams=50.0, slot="breakfast")
+    )
+    plan = plan_remaining(problem, log, {"lunch": "m"})
+
+    optimized_whey = sum(
+        it.grams for it in plan.items
+        if it.ingredient == "whey" and it.meal != LOGGED_MEAL_LABEL
+    )
+    # Only 10 g of headroom remain in the daily cap.
+    assert optimized_whey <= 10.0 + 1e-6
+
+    # And the combined whey across logged + optimized respects the original cap.
+    total_whey = sum(it.grams for it in plan.items if it.ingredient == "whey")
+    assert total_whey <= 60.0 + 1e-6
+
+
+def test_total_max_already_exceeded_blocks_more():
+    """If you've blown past total_max, the LP must not add any more."""
+    whey = Ingredient(name="whey", macros={"kcal": 400.0, "protein": 75.0})
+    rice = Ingredient(name="rice", macros={"kcal": 350.0, "carbs": 77.0})
+    meal = LibraryMeal(name="m", tag="lunch_dinner", ingredients=("whey", "rice"))
+    problem = Problem(
+        ingredients=(whey, rice),
+        targets=(MacroTarget(name="protein", value=200.0, weight=100.0),),
+        meal_library=(meal,),
+        bounds={"whey": IngredientBound(total_max=60.0)},
+    )
+    log = DayLog(log_date=date(2026, 5, 18)).with_added(
+        LogEntry(ingredient="whey", grams=80.0)
+    )
+    plan = plan_remaining(problem, log, {"lunch": "m"})
+
+    optimized_whey = sum(
+        it.grams for it in plan.items
+        if it.ingredient == "whey" and it.meal != LOGGED_MEAL_LABEL
+    )
+    assert optimized_whey == pytest.approx(0.0, abs=1e-6)
+
+
+def test_total_min_credits_already_eaten():
+    """A daily ``total_min`` should also shrink: if your floor is 200 g
+    of rice/day and you've eaten 150 g, the LP only needs 50 g more.
+    """
+    rice = Ingredient(name="rice", macros={"kcal": 350.0, "carbs": 77.0})
+    meal = LibraryMeal(name="m", tag="lunch_dinner", ingredients=("rice",))
+    problem = Problem(
+        ingredients=(rice,),
+        targets=(MacroTarget(name="kcal", value=100.0, weight=1.0),),
+        meal_library=(meal,),
+        bounds={"rice": IngredientBound(total_min=200.0)},
+    )
+    log = DayLog(log_date=date(2026, 5, 18)).with_added(
+        LogEntry(ingredient="rice", grams=150.0, slot="breakfast")
+    )
+    plan = plan_remaining(problem, log, {"lunch": "m"})
+
+    optimized_rice = sum(
+        it.grams for it in plan.items
+        if it.ingredient == "rice" and it.meal != LOGGED_MEAL_LABEL
+    )
+    # At least 50 g more to satisfy the daily floor.
+    assert optimized_rice >= 50.0 - 1e-6
+
+
+def test_unknown_ingredient_in_log_is_excluded_from_math_and_items():
+    """Stale log entries referencing a renamed/deleted ingredient are
+    skipped (mirrors what ``compute_totals`` already does)."""
+    problem = _basic_problem()
+    log = (
+        DayLog(log_date=date(2026, 5, 18))
+        .with_added(LogEntry(ingredient="chicken", grams=100))
+        .with_added(LogEntry(ingredient="cosmic_ray", grams=999))
+    )
+    plan = plan_remaining(problem, log, {"lunch": "ck"})
+
+    # Only the known logged item appears in the combined plan.
+    logged_names = [it.ingredient for it in plan.items if it.meal == LOGGED_MEAL_LABEL]
+    assert logged_names == ["chicken"]
+
+    # And the macro totals don't include cosmic_ray's bogus contribution.
+    # 100 g chicken alone = 100 kcal; the optimizer fills the rest.
+    optimized_kcal = sum(
+        it.grams * problem.ingredient_by_name(it.ingredient).amount_for("kcal") / 100.0
+        for it in plan.items
+        if it.meal != LOGGED_MEAL_LABEL
+    )
+    assert math.isclose(optimized_kcal, 500.0, abs_tol=1.0)
+
+
+def test_original_targets_used_for_deviation_report():
+    """Deviations should be measured against the user's *full-day* targets,
+    not the reduced ones — that's what they care about.
+    """
+    problem = _basic_problem()  # targets: 600 kcal, 40 g protein
+    log = DayLog(log_date=date(2026, 5, 18)).with_added(
+        LogEntry(ingredient="chicken", grams=200)  # 200 kcal, 40 g protein
+    )
+    plan = plan_remaining(problem, log, {"lunch": "ck"})
+
+    # Protein is already met by the log; combined should be on target.
+    assert math.isclose(plan.target_deviations["protein"], 0.0, abs_tol=0.5)
+    # kcal: combined should hit the FULL 600 target, deviation ~0.
+    assert math.isclose(plan.target_deviations["kcal"], 0.0, abs_tol=1.0)
+
+
+def test_original_problem_is_not_mutated():
+    """`replace`-based copying must leave the input ``Problem`` untouched."""
+    problem = _basic_problem()
+    original_targets = problem.targets
+    original_bounds = dict(problem.bounds)
+
+    log = DayLog(log_date=date(2026, 5, 18)).with_added(
+        LogEntry(ingredient="chicken", grams=300)
+    )
+    plan_remaining(problem, log, {"lunch": "ck"})
+
+    assert problem.targets is original_targets
+    assert dict(problem.bounds) == original_bounds
+
+
+def test_per_meal_bounds_are_unchanged_by_consumed():
+    """``per_meal_*`` bounds are per-slot facts and must NOT shrink based
+    on what was eaten earlier in the day."""
+    rice = Ingredient(name="rice", macros={"kcal": 350.0, "carbs": 77.0})
+    meal = LibraryMeal(
+        name="m",
+        tag="lunch_dinner",
+        ingredients=("rice",),
+        ingredient_specs={"rice": MealIngredient(main=True)},
+    )
+    problem = Problem(
+        ingredients=(rice,),
+        targets=(MacroTarget(name="kcal", value=1000.0, weight=1.0),),
+        meal_library=(meal,),
+        tag_constraints={"lunch_dinner": TagConstraints(macro_max={"kcal": 800.0})},
+        bounds={"rice": IngredientBound(per_meal_max=150.0)},
+    )
+
+    log = DayLog(log_date=date(2026, 5, 18)).with_added(
+        LogEntry(ingredient="rice", grams=100)
+    )
+    plan = plan_remaining(problem, log, {"lunch": "m"})
+
+    optimized_rice = sum(
+        it.grams for it in plan.items
+        if it.ingredient == "rice" and it.meal != LOGGED_MEAL_LABEL
+    )
+    # Per-meal cap of 150 g still applies, irrespective of the 100 g already eaten.
+    assert optimized_rice <= 150.0 + 1e-6

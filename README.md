@@ -10,7 +10,8 @@ Two tools that share one ingredient library:
   every meal.
 
 Both read the same `examples/day.yaml` config. Tracker = "what I ate".
-Planner = "what I should eat".
+Planner = "what I should eat". And they combine: see *Plan the rest of the
+day* below.
 
 ---
 
@@ -55,6 +56,27 @@ So a no-args launch in the right shell is just `foodtimizer-track`.
 
 If your PowerShell blocks venv activation, skip activation and call the
 executable directly via `.\.venv\Scripts\foodtimizer-track.exe …` as above.
+
+### Plan the rest of the day
+
+Inside the tracker, expand **🧮 Plan the rest of the day**. You pick which
+slots are still to come (e.g. dinner + a snack) and which meal goes in
+each. The optimizer then chooses the gram amounts for those slots so that
+the **whole day** (logged + planned) hits your macro targets.
+
+It does this by reducing each daily target and each per-ingredient daily
+total cap by what you've already eaten, then running the regular LP on
+the remaining slots only. So:
+
+- If you ate 30 g whey at breakfast and your daily cap is 60 g, the
+  remaining slots get at most 30 g more.
+- If you already crushed your 135 g protein goal, the optimizer plans a
+  light remainder — soft targets stay soft, the LP never goes infeasible.
+- Per-meal caps (e.g. *lunch ≤ 750 kcal*) are unchanged: they're per-slot
+  rules, not daily ones.
+
+Programmatically the same call is `foodtimizer.plan_remaining(problem,
+day_log, remaining_day_plan)`.
 
 ---
 

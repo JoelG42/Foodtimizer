@@ -22,7 +22,8 @@ from pathlib import Path
 import streamlit as st
 
 from foodtimizer.config import load_problem
-from foodtimizer.model import Ingredient, MacroTarget, Problem
+from foodtimizer.model import Ingredient, MacroTarget, Plan, Problem
+from foodtimizer.replan import LOGGED_MEAL_LABEL, plan_remaining
 from foodtimizer.tracker import (
     DayLog,
     compute_totals,
@@ -242,6 +243,157 @@ def _render_totals(problem: Problem, totals: dict[str, float]) -> None:
                 st.write(f"{m}: {totals[m]:.1f}")
 
 
+# Common slot -> meal-library tag. Used to populate the per-slot meal
+# dropdowns in the "plan rest of day" section. Slots not in this map fall
+# back to "any meal in the library".
+_SLOT_TO_TAG: dict[str, str] = {
+    "breakfast": "breakfast",
+    "lunch": "lunch_dinner",
+    "dinner": "lunch_dinner",
+    "snack": "snack",
+}
+
+
+def _render_planner(
+    problem: Problem,
+    log: DayLog,
+    ingredient_map: dict[str, Ingredient],
+) -> None:
+    """Render the 'Plan rest of day' section: pick remaining slots & meals,
+    then have the optimizer fill them in, accounting for what's been eaten.
+    """
+    meals_by_tag: dict[str, list[str]] = {}
+    for m in problem.meal_library:
+        meals_by_tag.setdefault(m.tag, []).append(m.name)
+
+    if not problem.meal_library:
+        st.info(
+            "No meals defined in your library — add some under `meal_library:` "
+            "in the config to use this feature."
+        )
+        return
+
+    # Default to slots not already represented in the log. The user can
+    # still tick/untick anything they want — the slot labels here are just
+    # bookkeeping, they don't have to match the slots used on log entries.
+    logged_slots = {e.slot for e in log.entries if e.slot}
+    default_slots = [s for s in _SLOT_TO_TAG if s not in logged_slots]
+
+    selected = st.multiselect(
+        "Which slots still need planning?",
+        options=list(_SLOT_TO_TAG.keys()),
+        default=default_slots,
+        help="Slots ticked here will be filled by the optimizer.",
+    )
+
+    if not selected:
+        st.caption("Pick at least one slot to enable planning.")
+        return
+
+    remaining_day_plan: dict[str, str] = {}
+    cols = st.columns(max(1, len(selected)))
+    for col, slot in zip(cols, selected):
+        tag = _SLOT_TO_TAG.get(slot)
+        candidates = sorted(meals_by_tag.get(tag, [])) if tag else sorted(
+            m.name for m in problem.meal_library
+        )
+        if not candidates:
+            col.warning(f"No meals tagged `{tag}` in the library.")
+            continue
+        default_meal = problem.default_day.get(slot)
+        if default_meal in candidates:
+            idx = candidates.index(default_meal)
+        else:
+            idx = 0
+        chosen = col.selectbox(slot, options=candidates, index=idx, key=f"plan_slot_{slot}")
+        if chosen:
+            remaining_day_plan[slot] = chosen
+
+    anchor_weight = st.slider(
+        "Anchor weight (recipe-faithfulness)",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(problem.defaults.anchor_weight or 0.05),
+        step=0.05,
+        help=(
+            "0 = pure macro fit (amounts can drift far from typical recipes). "
+            "Higher = stick closer to each meal's typical recipe amounts."
+        ),
+    )
+
+    if not st.button("🧮 Plan remaining slots", type="primary", use_container_width=True):
+        return
+    if not remaining_day_plan:
+        st.warning("Pick a meal for at least one slot first.")
+        return
+
+    try:
+        plan = plan_remaining(
+            problem, log, remaining_day_plan, anchor_weight=anchor_weight
+        )
+    except Exception as e:  # noqa: BLE001 - surface to UI
+        st.error(f"Could not plan: {e}")
+        return
+
+    _render_combined_plan(plan, problem, ingredient_map)
+
+
+def _render_combined_plan(
+    plan: Plan,
+    problem: Problem,
+    ingredient_map: dict[str, Ingredient],
+) -> None:
+    """Render the result of ``plan_remaining``: optimized slots + the
+    whole-day totals vs the user's original targets."""
+    if plan.status.startswith("FAILED"):
+        st.error(f"Optimizer failed: {plan.status}")
+        return
+
+    st.success(plan.status)
+
+    # Group items by slot, separating logged from optimized.
+    by_slot: dict[str, list] = {}
+    for it in plan.items:
+        by_slot.setdefault(it.slot, []).append(it)
+
+    # Render only the optimized slots here (logged entries are already
+    # visible in the day's log section above).
+    optimized_slots = [s for s, items in by_slot.items() if any(it.meal != LOGGED_MEAL_LABEL for it in items)]
+    if not optimized_slots:
+        st.info("Nothing optimized — check your slot picks.")
+        return
+
+    for slot in optimized_slots:
+        items = [it for it in by_slot[slot] if it.meal != LOGGED_MEAL_LABEL]
+        slot_kcal = sum(
+            it.grams * ingredient_map[it.ingredient].amount_for("kcal") / 100.0
+            for it in items
+            if it.ingredient in ingredient_map
+        )
+        meal_name = plan.slot_meals.get(slot, "?")
+        st.markdown(f"**{slot}** · {meal_name} · **{slot_kcal:.0f} kcal**")
+        rows = []
+        for it in sorted(items, key=lambda x: -x.grams):
+            ing = ingredient_map.get(it.ingredient)
+            kcal = it.grams * ing.amount_for("kcal") / 100.0 if ing else 0.0
+            protein = it.grams * ing.amount_for("protein") / 100.0 if ing else 0.0
+            anchor = f"~{it.anchor:.0f} g" if it.anchor is not None else "—"
+            rows.append(
+                {
+                    "ingredient": it.ingredient,
+                    "grams": f"{it.grams:.0f}",
+                    "kcal": f"{kcal:.0f}",
+                    "protein (g)": f"{protein:.1f}",
+                    "anchor": anchor,
+                }
+            )
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    # Whole-day totals (eaten + planned) vs original targets.
+    st.markdown("**Whole-day totals (logged + planned) vs targets**")
+    _render_totals(problem, dict(plan.macro_totals))
+
+
 def _render_date_picker() -> date:
     """Date picker with quick previous/next/today buttons."""
     if "sel_date" not in st.session_state:
@@ -295,6 +447,16 @@ def main() -> None:
     _render_totals(problem, totals)
 
     _render_entries(log, logs_dir, ingredient_map)
+
+    with st.expander("🧮 Plan the rest of the day", expanded=False):
+        st.caption(
+            "Given what you've already logged today, the optimizer picks "
+            "ingredient amounts for the remaining slots so that the *whole "
+            "day* (logged + planned) hits your macro targets. Daily total "
+            "caps (e.g. max 60 g whey/day) are credited for what's already "
+            "been eaten; per-meal caps still apply to each slot."
+        )
+        _render_planner(problem, log, ingredient_map)
 
     st.caption(
         f"Log file: `{Path(logs_dir) / (sel_date.isoformat() + '.json')}` · "
