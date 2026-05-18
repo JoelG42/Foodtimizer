@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging / distribution
+.eggs/
+*.egg-info/
+build/
+dist/
+pip-wheel-metadata/
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Foodtimizer: personal tracker logs. Remove this line if you want to
+# version-control your own food log as a private backup.
+logs/
+
+# Atomic-write temp files dropped by the tracker on crash.
+*.json.tmp
+
+# Local environment files (API keys etc.)
+.env
+.env.local
+.env.*.local

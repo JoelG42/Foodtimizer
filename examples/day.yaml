@@ -1,0 +1,167 @@
+# Foodtimizer example config.
+#
+# Workflow:
+#   1) Define your ingredients (macros per 100 g).
+#   2) Define your macro targets for the day.
+#   3) Define constraints per tag (e.g. breakfast caps at 400 kcal).
+#   4) Compile a `meal_library` of your meals, each tagged with what slot
+#      it fits in.
+#   5) Either set a default `day:` plan here, or override at the CLI with
+#      --breakfast / --lunch / --dinner / --snack flags.
+
+# Global defaults applied to every (slot, ingredient) variable.
+# Bound fields declared directly on an ingredient and per-meal ingredient
+# specs in `meal_library` can tighten these; effective min is the max of all
+# applicable lower bounds and effective max is the min of all upper bounds.
+defaults:
+  per_meal_min: 5      # every listed ingredient must contribute at least 5 g
+  per_meal_max: 320    # global ceiling; tighten for specific items below
+  main_min: 80         # default min grams for ingredients labelled `main`
+  # Soft pull toward each meal's per-ingredient `anchor` (typical recipe
+  # amount, in grams). Anchors are L1-penalised, so they bend when macro
+  # targets demand it. Keep this small relative to macro weights below.
+  anchor_weight: 0.05
+
+ingredients:
+  # Each ingredient holds its macros (per 100 g) plus any real-life
+  # constraints right next to them. Recognised bound keys:
+  #   - step                    : quantize gram amount (integer multiples)
+  #   - serving                 : typical per-meal minimum (alias for per_meal_min)
+  #   - per_meal_min/max        : per-meal grammage bounds
+  #   - per_meal_min/max_units  : same, expressed as multiples of `step`
+  #   - total_min/max[_units]   : daily bounds (across all slots)
+
+  # --- Breakfast staples ---
+  banana:        { kcal: 89,  protein: 1.1,  carbs: 23.0, fat: 0.3,  fibre: 2.6, serving: 80 }
+  eggs:          { kcal: 155, protein: 13.0, carbs: 1.1,  fat: 11.0, fibre: 0.0,
+                   step: 55, per_meal_max_units: 4, total_max_units: 4 }
+  whey_protein:  { kcal: 387, protein: 70.0, carbs: 8.0,  fat: 7.4,  fibre: 2.4, total_max: 60 }
+  cacao:         { kcal: 365, protein: 20,   carbs: 9.0,  fat: 21.0, fibre: 33.0, per_meal_max: 20 }
+  oats:          { kcal: 360, protein: 12,   carbs: 56,   fat: 6.5,  fibre: 13,   serving: 50 }
+  milk_0.5%:     { kcal: 38,  protein: 3.6,  carbs: 0.5,  fat: 0.5,  fibre: 0.0, serving: 100, per_meal_max: 250 }
+  milk_1.5%:     { kcal: 45,  protein: 4.0,  carbs: 0.6,  fat: 0.6,  fibre: 0.0, serving: 100, per_meal_max: 250 }
+  greek_yogurt:  { kcal: 50,  protein: 8.5,  carbs: 3.6,  fat: 0.0,  fibre: 0.0, serving: 100, per_meal_max: 250 }
+
+  # --- Lunch/dinner staples ---
+  chicken_breast: { kcal: 97, protein: 20.0, carbs: 0.0, fat: 0.5,  fibre: 0.0,
+                    step: 150, per_meal_max_units: 1 }       # 450 g pack = 3 portions
+  ground_beef:    { kcal: 125, protein: 21.0, carbs: 0.0, fat: 4.5, fibre: 0.0,
+                    step: 200, per_meal_max_units: 1 }       # 400 g pack = 2 portions
+  rice_white:     { kcal: 350, protein: 9,   carbs: 77.0, fat: 1.0, fibre: 0.0, serving: 80, per_meal_max: 200 }
+  pasta:          { kcal: 350, protein: 14,  carbs: 69,   fat: 1.5, fibre: 2.9, serving: 80, per_meal_max: 200 }
+  gnocchi:        { kcal: 154, protein: 4.0, carbs: 33.0, fat: 0.0, fibre: 0.0, serving: 120, per_meal_max: 200 }
+  potato_wedges:  { kcal: 127, protein: 2.2, carbs: 21.0, fat: 3.3, fibre: 2.3, serving: 100, per_meal_max: 250 }
+  tortilla:       { kcal: 292, protein: 8.8, carbs: 45.0, fat: 6.9, fibre: 7.3,
+                    step: 60, per_meal_min_units: 1, per_meal_max_units: 1, total_max_units: 1 }
+  avocado:        { kcal: 145, protein: 1.8, carbs: 2.2,  fat: 14.0, fibre: 7.0, serving: 60, per_meal_max: 100 }
+  avocado_oil:    { kcal: 824, protein: 0.0, carbs: 0.0,  fat: 91.6, fibre: 0.0, per_meal_max: 15 }
+  cheese:         { kcal: 234, protein: 34.0, carbs: 2.6, fat: 9.7,  fibre: 0.0, serving: 30, per_meal_max: 60 }
+  tomato:         { kcal: 18,  protein: 0.9, carbs: 3.9,  fat: 0.2,  fibre: 1.2, serving: 60, per_meal_max: 100 }
+  tomato_sauce:   { kcal: 27,  protein: 1.7, carbs: 4.1,  fat: 0.5,  fibre: 1.5, serving: 100, per_meal_max: 200 }
+  tomato_paste:   { kcal: 91,  protein: 1.4, carbs: 2.4,  fat: 0.1,  fibre: 0.6, serving: 15, per_meal_max: 30 }
+  onion:          { kcal: 40,  protein: 1.1, carbs: 9.3,  fat: 0.1,  fibre: 1.7, serving: 40, per_meal_max: 80 }
+  carrots:        { kcal: 35,  protein: 1.0, carbs: 9.6,  fat: 0.2,  fibre: 2.8, serving: 60, per_meal_max: 120 }
+  garlic:         { kcal: 149, protein: 6.0, carbs: 28.0, fat: 0.5,  fibre: 3.6, per_meal_max: 15 }
+  wok_mix:        { kcal: 31,  protein: 1.9, carbs: 4.4,  fat: 0.0,  fibre: 0.0, serving: 150, per_meal_max: 250 }
+  sriracha_mayo:  { kcal: 281, protein: 0.9, carbs: 26.0, fat: 19.0, fibre: 0.0, per_meal_max: 20 }
+  soy_sauce:      { kcal: 77,  protein: 1.9, carbs: 1.2,  fat: 0.1,  fibre: 0.0, per_meal_max: 20 }
+
+  # --- Snack staples ---
+  blueberries:    { kcal: 52,  protein: 1.7, carbs: 17.0, fat: 0.3,  fibre: 2.4, serving: 80, per_meal_max: 150 }
+
+
+targets:
+  kcal:    { value: 1800, weight: 50.0 }
+  protein: { value: 135,  weight: 50.0 }   # protein gets matched tightly
+  carbs:   { value: 225,  weight: 25.0 }    # 900 kcal / 4 kcal·g⁻¹ = 225 g
+  fat:     { value: 60,   weight: 1.0 }
+  fibre:   { lower: 25 }                   # min 25 g, no upper, no penalty
+
+tag_constraints:
+  breakfast:    { kcal_max: 400 }
+  # NOTE: combine both floors in ONE mapping. Writing `macro_min` twice silently
+  # drops the first one because YAML keeps the last duplicate key.
+  lunch_dinner: { kcal_max: 750, macro_min: { carbs: 30, protein: 25 } }
+  snack:        { kcal_max: 300 }
+
+meal_library:
+  # Per-ingredient mapping values supported:
+  #   <number>          -> anchor (typical grams for this meal)
+  #   main / aux        -> role flag (main hits defaults.main_min)
+  #   { anchor: N, main: true, min: N, max: N }
+  # Anchors are soft pulls — the optimizer will deviate to hit macros.
+  # Use min/max for hard limits, step on the ingredient for quantization.
+
+  oats_breakfast:
+    tag: breakfast
+    ingredients:
+      oats:          50
+      banana:        80
+      whey_protein:  30
+      milk_1.5%:         150
+      cacao:         10
+
+  banana_bread:
+    tag: breakfast
+    ingredients:
+      eggs:          55   # ~1 egg
+      banana:       100
+      whey_protein:  30
+      cacao:         10
+      milk_1.5%:          50
+
+  gnocchi_bolognese:
+    tag: lunch_dinner
+    ingredients:
+      gnocchi:      { anchor: 150, main: true }
+      ground_beef:  { anchor: 200, main: true }
+      tomato_sauce: 100
+      carrots:       80
+      onion:         50
+      avocado_oil:   10
+      tomato_paste:  20
+      garlic:         5
+
+  chicken_rice:
+    tag: lunch_dinner
+    ingredients:
+      chicken_breast: { anchor: 150, main: true, min: 120 }
+      rice_white:     { anchor: 120, main: true }
+      wok_mix:        { anchor: 200, main: true }
+      avocado_oil:    10
+      onion:          50
+      garlic:          5
+      soy_sauce:      10
+
+  chicken_wrap:
+    tag: lunch_dinner
+    ingredients:
+      chicken_breast: { anchor: 150, main: true }
+      tortilla:       { anchor:  60, main: true }   # pinned to 1 unit by step
+      avocado:        { anchor:  70, main: true }
+      cheese:         30
+      tomato:         60
+      onion:          30
+      sriracha_mayo:  10
+      garlic:          5
+      avocado_oil:     5
+
+  yoghurt_snack:
+    tag: snack
+    ingredients:
+      greek_yogurt: { anchor: 200, main: true }
+      blueberries:  { anchor: 100, main: true }
+      cacao:          5
+      whey_protein:  20
+
+# `ingredient_bounds:` is no longer needed for typical usage — bound info
+# lives next to each ingredient above. You *can* still add an
+# `ingredient_bounds:` section here to override any field on a per-ingredient
+# basis (it wins per field), but for this example everything is inline.
+
+# Default day plan — used if you don't override on the CLI.
+day:
+  breakfast: banana_bread
+  lunch:     chicken_wrap
+  dinner:    gnocchi_bolognese
+  snack:     yoghurt_snack

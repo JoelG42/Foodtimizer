@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "foodtimizer"
+version = "0.1.0"
+description = "Linear-programming optimizer for daily nutrition plans based on macro targets."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Joel" }]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+llm = ["openai>=1.0"]
+app = ["streamlit>=1.30"]
+
+[project.scripts]
+foodtimizer = "foodtimizer.cli:main"
+foodtimizer-anchors = "foodtimizer.suggest:main"
+foodtimizer-track = "foodtimizer.track_launcher:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
