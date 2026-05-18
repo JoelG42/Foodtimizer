@@ -14,9 +14,9 @@
 # specs in `meal_library` can tighten these; effective min is the max of all
 # applicable lower bounds and effective max is the min of all upper bounds.
 defaults:
-  per_meal_min: 2      # every listed ingredient must contribute at least 5 g
+  per_meal_min: 5      # every listed ingredient must contribute at least 5 g
   per_meal_max: 320    # global ceiling; tighten for specific items below
-  main_min: 80         # default min grams for ingredients labelled `main`
+  main_min: 100         # default min grams for ingredients labelled `main`
   # Soft pull toward each meal's per-ingredient `anchor` (typical recipe
   # amount, in grams). Anchors are L1-penalised, so they bend when macro
   # targets demand it. Keep this small relative to macro weights below.
@@ -32,9 +32,10 @@ ingredients:
   #   - total_min/max[_units]   : daily bounds (across all slots)
 
   # --- Breakfast staples ---
-  banana:        { kcal: 89,  protein: 1.1,  carbs: 23.0, fat: 0.3,  fibre: 2.6, serving: 80 }
+  banana:        { kcal: 89,  protein: 1.1,  carbs: 23.0, fat: 0.3,  fibre: 2.6, serving: 80, per_meal_max: 110 }
   eggs:          { kcal: 155, protein: 13.0, carbs: 1.1,  fat: 11.0, fibre: 0.0,
                    step: 55, per_meal_max_units: 4, total_max_units: 4 }
+  butter:        { kcal: 748, protein: 0.0, carbs: 0.0, fat: 81.0, fibre: 0.0, per_meal_max: 10 }
   whey_protein:  { kcal: 387, protein: 70.0, carbs: 8.0,  fat: 7.4,  fibre: 2.4, total_max: 60 }
   cacao:         { kcal: 365, protein: 20,   carbs: 9.0,  fat: 21.0, fibre: 33.0, per_meal_max: 20 }
   oats:          { kcal: 360, protein: 12,   carbs: 56,   fat: 6.5,  fibre: 13,   serving: 50 }
@@ -44,21 +45,28 @@ ingredients:
 
   # --- Lunch/dinner staples ---
   chicken_breast: { kcal: 97, protein: 20.0, carbs: 0.0, fat: 0.5,  fibre: 0.0,
-                    step: 150, per_meal_max_units: 1 }       # 450 g pack = 3 portions
+                    per_meal_max: 150 }       # 450 g pack = 3 portions
   ground_beef:    { kcal: 125, protein: 21.0, carbs: 0.0, fat: 4.5, fibre: 0.0, per_meal_max: 200 }       # 400 g pack = 2 portions
-  rice_white:     { kcal: 350, protein: 9,   carbs: 77.0, fat: 1.0, fibre: 0.0, serving: 80, per_meal_max: 200 }
-  pasta:          { kcal: 350, protein: 14,  carbs: 69,   fat: 1.5, fibre: 2.9, serving: 80, per_meal_max: 200 }
+  rice_white:     { kcal: 350, protein: 9,   carbs: 77.0, fat: 1.0, fibre: 0.0, serving: 80, per_meal_max: 150 }
+  sushi_rice:     { kcal: 342, protein: 7.8,   carbs: 75.0, fat: 1.0, fibre: 2.2, serving: 80, per_meal_max: 150 }
+  vinegar:        { kcal: 19,  protein: 0.0, carbs: 0.0, fat: 0.0, fibre: 0.0, serving: 10, per_meal_max: 15 }
+  honey:          { kcal: 340, protein: 0.0, carbs: 83.0, fat: 0.0, fibre: 0.0, serving: 10, per_meal_max: 15 }
+  mango:          { kcal: 64,  protein: 0.6, carbs: 14.0, fat: 0.0, fibre: 1.6, serving: 60, per_meal_max: 150 }
+  sushi_salmon:   { kcal: 161, protein: 21.4, carbs: 0.0, fat: 8.4, fibre: 0.0, step: 130,serving: 130, per_meal_max: 150 }
+  black_sesame_seeds: { kcal: 636, protein: 19.0, carbs: 23.0, fat: 52.0, fibre: 13.0, serving: 15, per_meal_max: 5 }
+  pasta:          { kcal: 350, protein: 14,  carbs: 69,   fat: 1.5, fibre: 2.9, serving: 80, per_meal_max: 150 }
+  shrimp:         { kcal: 65, protein: 15.0, carbs: 0.0, fat: 0.5, fibre: 0.0, serving: 150, per_meal_max: 150 }
   gnocchi:        { kcal: 154, protein: 4.0, carbs: 33.0, fat: 0.0, fibre: 0.0, serving: 120, per_meal_max: 200 }
-  potato_wedges:  { kcal: 127, protein: 2.2, carbs: 21.0, fat: 3.3, fibre: 2.3, serving: 100, per_meal_max: 250 }
+  potato_wedges:  { kcal: 127, protein: 2.2, carbs: 21.0, fat: 3.3, fibre: 2.3, serving: 100, per_meal_max: 300 }
   tortilla:       { kcal: 292, protein: 8.8, carbs: 45.0, fat: 6.9, fibre: 7.3,
                     step: 60, per_meal_min_units: 1, per_meal_max_units: 1, total_max_units: 1 }
   bell_pepper:    { kcal: 26,  protein: 1.1, carbs: 6.2,  fat: 0.2,  fibre: 1.4, serving: 60, per_meal_max: 100 }
   avocado:        { kcal: 145, protein: 1.8, carbs: 2.2,  fat: 14.0, fibre: 7.0, serving: 60, per_meal_max: 100 }
-  avocado_oil:    { kcal: 824, protein: 0.0, carbs: 0.0,  fat: 91.6, fibre: 0.0, per_meal_max: 15 }
-  cheese:         { kcal: 234, protein: 34.0, carbs: 2.6, fat: 9.7,  fibre: 0.0, serving: 30, per_meal_max: 60 }
-  tomato:         { kcal: 18,  protein: 0.9, carbs: 3.9,  fat: 0.2,  fibre: 1.2, serving: 60, per_meal_max: 100 }
+  avocado_oil:    { kcal: 824, protein: 0.0, carbs: 0.0,  fat: 91.6, fibre: 0.0, per_meal_max: 2 }
+  cheese:         { kcal: 234, protein: 34.0, carbs: 2.6, fat: 9.7,  fibre: 0.0, serving: 30, per_meal_max: 40 }
+  tomato:         { kcal: 18,  protein: 0.9, carbs: 3.9,  fat: 0.2,  fibre: 1.2, serving: 60, per_meal_max: 120 }
   tomato_sauce:   { kcal: 27,  protein: 1.7, carbs: 4.1,  fat: 0.5,  fibre: 1.5, serving: 100, per_meal_max: 200 }
-  tomato_paste:   { kcal: 91,  protein: 1.4, carbs: 2.4,  fat: 0.1,  fibre: 0.6, serving: 15, per_meal_max: 30 }
+  tomato_paste:   { kcal: 91,  protein: 1.4, carbs: 2.4,  fat: 0.1,  fibre: 0.6, serving: 15, per_meal_max: 15 }
   onion:          { kcal: 40,  protein: 1.1, carbs: 9.3,  fat: 0.1,  fibre: 1.7, serving: 40, per_meal_max: 80 }
   carrots:        { kcal: 35,  protein: 1.0, carbs: 9.6,  fat: 0.2,  fibre: 2.8, serving: 60, per_meal_max: 120 }
   garlic:         { kcal: 149, protein: 6.0, carbs: 28.0, fat: 0.5,  fibre: 3.6, per_meal_max: 15 }
@@ -66,16 +74,17 @@ ingredients:
   sriracha_mayo:  { kcal: 281, protein: 0.9, carbs: 26.0, fat: 19.0, fibre: 0.0, per_meal_max: 20 }
   soy_sauce:      { kcal: 77,  protein: 1.9, carbs: 1.2,  fat: 0.1,  fibre: 0.0, per_meal_max: 20 }
   coco_pops:      { kcal: 380, protein: 10.0, carbs: 77.0, fat: 2.2, fibre: 6.0, serving: 30, per_meal_max: 100 }
+  peanut_butter:  { kcal: 613, protein: 25.0, carbs: 17.0, fat: 48.0, fibre: 4.5, serving: 10, per_meal_max: 40 }
 
   # --- Snack staples ---
-  blueberries:    { kcal: 52,  protein: 1.7, carbs: 17.0, fat: 0.3,  fibre: 2.4, serving: 80, per_meal_max: 150 }
+  blueberries:    { kcal: 52,  protein: 1.7, carbs: 17.0, fat: 0.3,  fibre: 2.4, serving: 80, per_meal_max: 100 }
 
 
 targets:
   kcal:    { value: 1800, weight: 50.0 }
   protein: { value: 135, weight: 25.0 }   # protein gets matched tightly
-  carbs:   { value: 225, weight: 25.0 }    # 900 kcal / 4 kcal·g⁻¹ = 225 g
-  fat:     { value: 60, weight: 25.0 }
+  carbs:   { value: 180, weight: 25.0 }    # 900 kcal / 4 kcal·g⁻¹ = 225 g
+  fat:     { value: 60, weight: 50.0 }
   fibre:   { lower: 25 }                   # min 25 g, no upper, no penalty
 
 tag_constraints:
@@ -101,6 +110,7 @@ meal_library:
       whey_protein:  30
       milk_1.5%:     100
       cacao:         5
+      peanut_butter: 10
 
   banana_bread:
     tag: breakfast
@@ -110,40 +120,57 @@ meal_library:
       whey_protein:  20
       cacao:         5
       milk_1.5%:     30
+      peanut_butter: 10
+
+  poke_bowl:
+    tag: lunch_dinner
+    ingredients:
+      sushi_salmon:  130
+      sushi_rice:    100
+      vinegar:       10
+      honey:         10
+      mango:         60
+      avocado:       70
+      sriracha_mayo:  10
+      soy_sauce:      5
+      black_sesame_seeds: 5
+      onion:          30
 
   gnocchi_bolognese:
     tag: lunch_dinner
     ingredients:
       gnocchi:      150
-      ground_beef:  150
+      ground_beef:  { anchor: 100, main: true }
       tomato_sauce: 100
       carrots:       80
       onion:         50
       avocado_oil:   2
       tomato_paste:  10
       garlic:         5
+      butter:         5
 
   pasta_bolognese:
     tag: lunch_dinner
     ingredients:
       pasta: 100
-      ground_beef: 100
+      ground_beef: { anchor: 100, main: true }
       tomato_sauce: 150
       carrots:       80
       onion:         50
       avocado_oil:   2
       garlic:         5
       tomato_paste:  8
+      butter:         5
 
   chicken_rice:
     tag: lunch_dinner
     ingredients:
-      chicken_breast: { anchor: 150, main: true, min: 120 }
+      chicken_breast: { anchor: 150, main: true}
       rice_white:     100
       wok_mix:        150
       avocado_oil:    2
       onion:          50
-      garlic:          5
+      garlic:         5
       soy_sauce:      5
 
   chicken_wrap:
@@ -162,7 +189,7 @@ meal_library:
   beef_wrap:
     tag: lunch_dinner
     ingredients:
-      ground_beef: 100
+      ground_beef: { anchor: 100, main: true }
       tortilla: { anchor: 60, main: true }
       greek_yogurt: 50
       cheese: 15
@@ -171,20 +198,34 @@ meal_library:
       garlic: 5
       avocado_oil: 2
 
+
+  shrimp_gnocchi:
+    tag: lunch_dinner
+    ingredients:
+      shrimp: 150
+      gnocchi: 150
+      tomato_sauce: 30
+      onion: 50
+      garlic: 5
+      tomato_paste: 10
+      greek_yogurt: 50
+      avocado_oil: 2
+
   yoghurt_snack:
     tag: snack
     ingredients:
-      greek_yogurt: 180
+      greek_yogurt: { anchor: 150, main: true, min: 120 }
       blueberries:  60
       cacao:          5
       whey_protein:  20
+      peanut_butter: 5
 
 
   coco_pops_snack:
     tag: snack
     ingredients:
       coco_pops: 30
-      milk_1.5%: 120
+      milk_1.5%: { anchor: 100, main: true, min: 100 }
 
 
 # `ingredient_bounds:` is no longer needed for typical usage — bound info
