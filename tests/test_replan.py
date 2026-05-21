@@ -12,6 +12,7 @@ from datetime import date
 import pytest
 
 from foodtimizer import (
+    CustomSlot,
     DayLog,
     Ingredient,
     IngredientBound,
@@ -23,7 +24,7 @@ from foodtimizer import (
     TagConstraints,
     plan_remaining,
 )
-from foodtimizer.replan import LOGGED_MEAL_LABEL
+from foodtimizer.replan import CUSTOM_MEAL_PREFIX, LOGGED_MEAL_LABEL
 
 
 def _basic_problem() -> Problem:
@@ -272,6 +273,200 @@ def test_original_problem_is_not_mutated():
 
     assert problem.targets is original_targets
     assert dict(problem.bounds) == original_bounds
+
+
+def test_custom_slot_only_no_saved_meal():
+    """A custom slot alone (no saved meals) plans an ad-hoc 'meal' that
+    contains exactly the ingredients you picked."""
+    chicken = Ingredient(name="chicken", macros={"kcal": 100.0, "protein": 20.0})
+    rice = Ingredient(name="rice", macros={"kcal": 350.0, "protein": 9.0, "carbs": 77.0})
+    problem = Problem(
+        ingredients=(chicken, rice),
+        targets=(
+            MacroTarget(name="kcal", value=500.0, weight=1.0),
+            MacroTarget(name="protein", value=40.0, weight=100.0),
+        ),
+        meal_library=(),
+    )
+
+    plan = plan_remaining(
+        problem,
+        DayLog(log_date=date(2026, 5, 21)),
+        remaining_day_plan=None,
+        custom_slots={"snack": CustomSlot(ingredients=("chicken", "rice"))},
+    )
+
+    assert not plan.status.startswith("FAILED")
+    # Slot is in slot_meals, and the meal name is the synthetic one.
+    assert "snack" in plan.slot_meals
+    assert plan.slot_meals["snack"].startswith(CUSTOM_MEAL_PREFIX)
+    # And the optimized items only contain the chosen ingredients.
+    ingredients = {it.ingredient for it in plan.items}
+    assert ingredients == {"chicken", "rice"}
+
+
+def test_custom_slot_mixed_with_saved_meal():
+    """You can use a saved meal for one slot and a custom slot for another
+    in the same call."""
+    chicken = Ingredient(name="chicken", macros={"kcal": 100.0, "protein": 20.0})
+    rice = Ingredient(name="rice", macros={"kcal": 350.0, "protein": 9.0, "carbs": 77.0})
+    bread = Ingredient(name="bread", macros={"kcal": 250.0, "protein": 9.0, "carbs": 49.0})
+
+    meal = LibraryMeal(name="ck", tag="lunch_dinner", ingredients=("chicken", "rice"))
+    problem = Problem(
+        ingredients=(chicken, rice, bread),
+        targets=(MacroTarget(name="kcal", value=900.0, weight=1.0),),
+        meal_library=(meal,),
+    )
+
+    plan = plan_remaining(
+        problem,
+        DayLog(log_date=date(2026, 5, 21)),
+        remaining_day_plan={"lunch": "ck"},
+        custom_slots={"snack": CustomSlot(ingredients=("bread", "chicken"))},
+    )
+
+    assert not plan.status.startswith("FAILED")
+    assert plan.slot_meals["lunch"] == "ck"
+    assert plan.slot_meals["snack"].startswith(CUSTOM_MEAL_PREFIX)
+
+    lunch_ings = {it.ingredient for it in plan.items if it.slot == "lunch"}
+    snack_ings = {it.ingredient for it in plan.items if it.slot == "snack"}
+    assert lunch_ings.issubset({"chicken", "rice"})
+    assert snack_ings.issubset({"bread", "chicken"})
+
+
+def test_custom_slot_tag_inferred_from_slot_name():
+    """A snack-slot custom meal picks up the ``snack`` tag's kcal cap."""
+    rice = Ingredient(name="rice", macros={"kcal": 350.0, "carbs": 77.0})
+    problem = Problem(
+        ingredients=(rice,),
+        targets=(MacroTarget(name="kcal", value=1000.0, weight=1.0),),
+        meal_library=(),
+        tag_constraints={"snack": TagConstraints(macro_max={"kcal": 200.0})},
+    )
+
+    plan = plan_remaining(
+        problem,
+        DayLog(log_date=date(2026, 5, 21)),
+        custom_slots={"snack": CustomSlot(ingredients=("rice",))},
+    )
+    # Snack tag caps kcal at 200; even though the daily target is 1000,
+    # the snack alone can't exceed 200 kcal.
+    snack_kcal = sum(
+        it.grams * rice.amount_for("kcal") / 100.0
+        for it in plan.items
+        if it.slot == "snack"
+    )
+    assert snack_kcal <= 200.0 + 1e-6
+
+
+def test_custom_slot_explicit_tag_overrides_inference():
+    """Passing an explicit tag (or empty string for 'no tag') wins over
+    the slot-name default."""
+    rice = Ingredient(name="rice", macros={"kcal": 350.0, "carbs": 77.0})
+    problem = Problem(
+        ingredients=(rice,),
+        targets=(MacroTarget(name="kcal", value=1000.0, weight=1.0),),
+        meal_library=(),
+        # Snack tag would cap at 200, but we override with "" (no tag).
+        tag_constraints={"snack": TagConstraints(macro_max={"kcal": 200.0})},
+    )
+
+    plan = plan_remaining(
+        problem,
+        DayLog(log_date=date(2026, 5, 21)),
+        custom_slots={"snack": CustomSlot(ingredients=("rice",), tag="")},
+    )
+    snack_kcal = sum(
+        it.grams * rice.amount_for("kcal") / 100.0
+        for it in plan.items
+        if it.slot == "snack"
+    )
+    # With tag overridden to "", the snack cap doesn't apply.
+    assert snack_kcal > 200.0
+
+
+def test_custom_slot_rejects_unknown_ingredient():
+    """A bad ingredient name should error before the LP runs."""
+    rice = Ingredient(name="rice", macros={"kcal": 350.0})
+    problem = Problem(
+        ingredients=(rice,),
+        targets=(MacroTarget(name="kcal", value=200.0, weight=1.0),),
+        meal_library=(),
+    )
+    with pytest.raises(ValueError, match=r"unknown ingredient"):
+        plan_remaining(
+            problem,
+            DayLog(log_date=date(2026, 5, 21)),
+            custom_slots={
+                "snack": CustomSlot(ingredients=("rice", "moondust")),
+            },
+        )
+
+
+def test_custom_slot_rejects_empty_ingredients():
+    rice = Ingredient(name="rice", macros={"kcal": 350.0})
+    problem = Problem(
+        ingredients=(rice,),
+        targets=(MacroTarget(name="kcal", value=200.0, weight=1.0),),
+        meal_library=(),
+    )
+    with pytest.raises(ValueError, match=r"empty"):
+        plan_remaining(
+            problem,
+            DayLog(log_date=date(2026, 5, 21)),
+            custom_slots={"snack": CustomSlot(ingredients=())},
+        )
+
+
+def test_custom_slot_overlap_with_saved_plan_errors():
+    """The same slot in both maps is ambiguous and must error."""
+    rice = Ingredient(name="rice", macros={"kcal": 350.0})
+    meal = LibraryMeal(name="m", tag="snack", ingredients=("rice",))
+    problem = Problem(
+        ingredients=(rice,),
+        targets=(MacroTarget(name="kcal", value=200.0, weight=1.0),),
+        meal_library=(meal,),
+    )
+    with pytest.raises(ValueError, match=r"both"):
+        plan_remaining(
+            problem,
+            DayLog(log_date=date(2026, 5, 21)),
+            remaining_day_plan={"snack": "m"},
+            custom_slots={"snack": CustomSlot(ingredients=("rice",))},
+        )
+
+
+def test_custom_slot_accepts_list_or_tuple():
+    """``CustomSlot.ingredients`` may be any iterable; we coerce to tuple."""
+    spec_from_list = CustomSlot(ingredients=["a", "b"])
+    spec_from_tuple = CustomSlot(ingredients=("a", "b"))
+    assert spec_from_list.ingredients == ("a", "b")
+    assert spec_from_tuple.ingredients == ("a", "b")
+    # Frozen dataclass: equal specs hash the same -> usable as dict keys.
+    assert spec_from_list == spec_from_tuple
+    assert hash(spec_from_list) == hash(spec_from_tuple)
+
+
+def test_custom_slot_does_not_mutate_input_problem():
+    """The synthetic meal is added to a copy; the caller's Problem
+    keeps its original ``meal_library``."""
+    rice = Ingredient(name="rice", macros={"kcal": 350.0})
+    problem = Problem(
+        ingredients=(rice,),
+        targets=(MacroTarget(name="kcal", value=200.0, weight=1.0),),
+        meal_library=(),
+    )
+    original_library = problem.meal_library
+
+    plan_remaining(
+        problem,
+        DayLog(log_date=date(2026, 5, 21)),
+        custom_slots={"snack": CustomSlot(ingredients=("rice",))},
+    )
+    assert problem.meal_library is original_library
+    assert problem.meal_library == ()
 
 
 def test_per_meal_bounds_are_unchanged_by_consumed():

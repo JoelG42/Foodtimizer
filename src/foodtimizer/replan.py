@@ -36,11 +36,12 @@ A :class:`Plan` containing both logged and optimized items:
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Mapping
 
 from .model import (
     IngredientBound,
+    LibraryMeal,
     MacroTarget,
     Plan,
     PlanItem,
@@ -56,15 +57,67 @@ _DEFAULT_LOGGED_SLOT = "logged"
 # Meal label used on logged PlanItems so the UI can distinguish them.
 LOGGED_MEAL_LABEL = "(logged)"
 
+# Prefix for synthetic LibraryMeal names created from CustomSlot specs.
+# Exposed so UIs can detect "this is a one-off meal, render it
+# differently" without parsing the rest of the name.
+CUSTOM_MEAL_PREFIX = "__custom_"
+
+# Sensible default tag when a CustomSlot does not specify one. Slots not
+# in this map default to no tag (i.e. no tag-level constraints applied).
+_SLOT_TAG_DEFAULTS: dict[str, str] = {
+    "breakfast": "breakfast",
+    "lunch": "lunch_dinner",
+    "dinner": "lunch_dinner",
+    "snack": "snack",
+}
+
+
+@dataclass(frozen=True)
+class CustomSlot:
+    """An ad-hoc meal for one slot: a hand-picked list of ingredients.
+
+    Use this when:
+
+    - You don't want to commit a meal to ``meal_library:`` yet (e.g. a
+      one-off sandwich) and just want the optimizer to pick gram amounts
+      across some ingredients you have in the fridge.
+    - You want to remix a saved meal (e.g. swap broccoli for bell pepper)
+      without editing the YAML.
+
+    ``tag`` selects which ``tag_constraints`` apply (kcal cap, macro
+    floors, etc.). If ``None``, the planner uses a sensible default based
+    on the slot name (``breakfast`` -> ``breakfast``,
+    ``lunch``/``dinner`` -> ``lunch_dinner``, ``snack`` -> ``snack``).
+    Pass an empty string (``""``) to apply **no** tag constraints at all.
+
+    Notes
+    -----
+
+    - Synthetic meals carry no anchors and no ``main`` flags, so the
+      optimizer has maximum freedom to choose grams. Per-ingredient
+      bounds (``per_meal_min``, ``per_meal_max``, ``step``, daily totals)
+      still apply because they are keyed on the ingredient, not the meal.
+    - The ``ingredients`` argument accepts any iterable of names; we
+      coerce to a tuple for hashability.
+    """
+
+    ingredients: tuple[str, ...]
+    tag: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.ingredients, tuple):
+            object.__setattr__(self, "ingredients", tuple(self.ingredients))
+
 
 def plan_remaining(
     problem: Problem,
     day_log: DayLog,
-    remaining_day_plan: Mapping[str, str],
+    remaining_day_plan: Mapping[str, str] | None = None,
     *,
     anchor_weight: float | None = None,
+    custom_slots: Mapping[str, CustomSlot] | None = None,
 ) -> Plan:
-    """Plan ``remaining_day_plan`` given what's already in ``day_log``.
+    """Plan ``remaining_day_plan`` + ``custom_slots`` given what's in ``day_log``.
 
     Parameters
     ----------
@@ -74,25 +127,47 @@ def plan_remaining(
     day_log
         What you've eaten so far today.
     remaining_day_plan
-        ``{slot_name: meal_name}`` for the slots you still want the
-        optimizer to fill. Can be empty (then the result is just a
-        report of what you've eaten vs your targets).
+        ``{slot_name: meal_name}`` for slots that should be filled with a
+        meal from your saved library. May be empty / ``None``.
     anchor_weight
         Per-call override of ``problem.defaults.anchor_weight``; same
         semantics as :func:`optimize`.
+    custom_slots
+        ``{slot_name: CustomSlot(...)}`` for slots you want to fill with
+        a hand-picked list of ingredients rather than a saved meal. The
+        slot names must not overlap with ``remaining_day_plan``.
 
     Returns
     -------
     A combined :class:`Plan`. Items are ordered: logged entries first
-    (in log order), then optimized items.
+    (in log order), then optimized items. Custom slots are reported with
+    their synthetic meal name (prefixed ``__custom_…``); UIs can detect
+    these via :data:`CUSTOM_MEAL_PREFIX` and render them as "(custom)".
     """
-    ingredient_map = {i.name: i for i in problem.ingredients}
+    saved_plan = dict(remaining_day_plan or {})
+    customs = dict(custom_slots or {})
+
+    overlap = set(saved_plan) & set(customs)
+    if overlap:
+        raise ValueError(
+            f"Slot(s) {sorted(overlap)} appear in both `remaining_day_plan` "
+            "and `custom_slots`; pick one source per slot."
+        )
+
+    # Synthesize a ``LibraryMeal`` for each custom slot and merge it into
+    # a working ``Problem`` so the rest of the pipeline (subtract-consumed,
+    # optimize) treats custom and saved meals identically.
+    extended_problem, full_day_plan = _attach_custom_slots(problem, saved_plan, customs)
+
+    ingredient_map = {i.name: i for i in extended_problem.ingredients}
     consumed_macros = compute_totals(day_log, ingredient_map)
     consumed_grams = _consumed_grams_per_ingredient(day_log, ingredient_map)
 
-    if remaining_day_plan:
-        derived = _problem_minus_consumed(problem, consumed_macros, consumed_grams)
-        plan = optimize(derived, remaining_day_plan, anchor_weight=anchor_weight)
+    if full_day_plan:
+        derived = _problem_minus_consumed(
+            extended_problem, consumed_macros, consumed_grams
+        )
+        plan = optimize(derived, full_day_plan, anchor_weight=anchor_weight)
         if plan.status.startswith("FAILED"):
             # Surface the failure verbatim; caller decides how to display.
             return plan
@@ -137,6 +212,85 @@ def plan_remaining(
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
+
+
+def _attach_custom_slots(
+    problem: Problem,
+    saved_slots: dict[str, str],
+    customs: dict[str, CustomSlot],
+) -> tuple[Problem, dict[str, str]]:
+    """Synthesize a ``LibraryMeal`` for each custom slot and return an
+    extended ``Problem`` plus a unified ``{slot: meal_name}`` mapping.
+
+    Validation done here so any bad input fails before we touch the LP:
+    empty ingredient lists, unknown ingredient names, name collisions
+    with existing library meals.
+    """
+    if not customs:
+        return problem, dict(saved_slots)
+
+    known_ings = {ing.name for ing in problem.ingredients}
+    existing_meal_names = {m.name for m in problem.meal_library}
+
+    synthetic: list[LibraryMeal] = []
+    full_day_plan = dict(saved_slots)
+
+    for slot, spec in customs.items():
+        if not spec.ingredients:
+            raise ValueError(
+                f"Custom slot {slot!r}: ingredient list is empty. "
+                "Pick at least one ingredient."
+            )
+        unknown = [i for i in spec.ingredients if i not in known_ings]
+        if unknown:
+            raise ValueError(
+                f"Custom slot {slot!r}: unknown ingredient(s) {unknown}. "
+                "Add them under `ingredients:` in your config first."
+            )
+
+        # Tag resolution: explicit empty string disables tag constraints
+        # entirely; ``None`` falls back to the slot-name default; anything
+        # else is taken verbatim.
+        if spec.tag is None:
+            tag = _SLOT_TAG_DEFAULTS.get(slot, "")
+        else:
+            tag = spec.tag
+
+        meal_name = _synthetic_meal_name(slot, existing_meal_names)
+        existing_meal_names.add(meal_name)
+
+        # No ``ingredient_specs`` -> no anchors, no ``main`` flags. That
+        # matches the intent of an ad-hoc, macro-driven meal: the LP picks
+        # whatever grams hit the targets, only respecting per-ingredient
+        # bounds and (optionally) the slot's tag constraints.
+        synthetic.append(
+            LibraryMeal(
+                name=meal_name,
+                tag=tag,
+                ingredients=tuple(spec.ingredients),
+            )
+        )
+        full_day_plan[slot] = meal_name
+
+    extended = replace(
+        problem,
+        meal_library=problem.meal_library + tuple(synthetic),
+    )
+    return extended, full_day_plan
+
+
+def _synthetic_meal_name(slot: str, taken: set[str]) -> str:
+    """Pick a synthetic meal name that doesn't collide with anything
+    already in the library. We disambiguate with a numeric suffix only
+    if needed; the common case is just ``__custom_<slot>``.
+    """
+    base = f"{CUSTOM_MEAL_PREFIX}{slot}"
+    if base not in taken:
+        return base
+    i = 2
+    while f"{base}_{i}" in taken:
+        i += 1
+    return f"{base}_{i}"
 
 
 def _consumed_grams_per_ingredient(

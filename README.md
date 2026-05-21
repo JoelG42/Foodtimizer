@@ -59,14 +59,26 @@ executable directly via `.\.venv\Scripts\foodtimizer-track.exe …` as above.
 
 ### Plan the rest of the day
 
-Inside the tracker, expand **🧮 Plan the rest of the day**. You pick which
-slots are still to come (e.g. dinner + a snack) and which meal goes in
-each. The optimizer then chooses the gram amounts for those slots so that
-the **whole day** (logged + planned) hits your macro targets.
+Inside the tracker, expand **🧮 Plan the rest of the day**. For each slot
+that's still to come you pick one of two modes:
 
-It does this by reducing each daily target and each per-ingredient daily
-total cap by what you've already eaten, then running the regular LP on
-the remaining slots only. So:
+- **Saved meal** — choose a meal from your `meal_library`. Anchors, main
+  flags and tag-level constraints all apply, so the result looks
+  recipe-shaped.
+- **Custom ingredients** — hand-pick any list of ingredients. Optionally
+  *start from* an existing saved meal to pre-fill the list, then add or
+  remove items (e.g. *chicken_rice* with bell pepper instead of
+  broccoli — no YAML edit needed). Custom slots carry no anchors and no
+  `main` flags, so the optimizer has maximum freedom to choose grams
+  that hit your macros — useful for ad-hoc snacks (a toast + deli
+  chicken sandwich) where a fixed recipe doesn't really exist.
+
+You can mix freely: dinner from a saved meal, snack from a custom list,
+all in one click.
+
+The whole-day picture is what the optimizer aims for. It reduces each
+daily target and each per-ingredient daily total cap by what you've
+already eaten, then runs the LP on the remaining slots only:
 
 - If you ate 30 g whey at breakfast and your daily cap is 60 g, the
   remaining slots get at most 30 g more.
@@ -75,8 +87,28 @@ the remaining slots only. So:
 - Per-meal caps (e.g. *lunch ≤ 750 kcal*) are unchanged: they're per-slot
   rules, not daily ones.
 
-Programmatically the same call is `foodtimizer.plan_remaining(problem,
-day_log, remaining_day_plan)`.
+Programmatic equivalent:
+
+```python
+from foodtimizer import (
+    CustomSlot, DayLog, load_problem, load_day_log, plan_remaining,
+)
+
+problem = load_problem("examples/day.yaml")
+log = load_day_log("logs", date.today())
+
+plan = plan_remaining(
+    problem, log,
+    {"lunch": "chicken_rice"},                       # saved meals
+    custom_slots={                                   # ad-hoc meals
+        "snack": CustomSlot(
+            ingredients=("bread", "deli_chicken", "tomato"),
+            # tag defaults to the slot-name's tag ("snack" here);
+            # pass tag="" to skip tag-level constraints entirely.
+        ),
+    },
+)
+```
 
 ---
 
