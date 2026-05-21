@@ -24,7 +24,11 @@ from foodtimizer import (
     TagConstraints,
     plan_remaining,
 )
-from foodtimizer.replan import CUSTOM_MEAL_PREFIX, LOGGED_MEAL_LABEL
+from foodtimizer.replan import (
+    CUSTOM_MEAL_PREFIX,
+    LOGGED_MEAL_LABEL,
+    diagnose_infeasibility,
+)
 
 
 def _basic_problem() -> Problem:
@@ -498,3 +502,130 @@ def test_per_meal_bounds_are_unchanged_by_consumed():
     )
     # Per-meal cap of 150 g still applies, irrespective of the 100 g already eaten.
     assert optimized_rice <= 150.0 + 1e-6
+
+
+# ---------------------------------------------------------------------------
+# diagnose_infeasibility
+# ---------------------------------------------------------------------------
+
+
+def _toast_problem():
+    """Reusable: a snack-cap world matching the kind of setup the user
+    has in examples/day.yaml. Forces realistic per-meal floors via
+    ``per_meal_min`` so we can trigger the snack-cap conflict."""
+    deli = Ingredient(name="deli_chicken", macros={"kcal": 102.0, "protein": 20.0})
+    toast = Ingredient(name="toast_bread", macros={"kcal": 250.0, "carbs": 42.0})
+    tomato = Ingredient(name="tomato", macros={"kcal": 18.0})
+    cheese = Ingredient(name="cheese", macros={"kcal": 234.0, "protein": 34.0})
+    return Problem(
+        ingredients=(deli, toast, tomato, cheese),
+        targets=(MacroTarget(name="kcal", value=1800.0, weight=1.0),),
+        meal_library=(),
+        tag_constraints={"snack": TagConstraints(macro_max={"kcal": 300.0})},
+        bounds={
+            "deli_chicken": IngredientBound(per_meal_min=100.0),
+            "toast_bread": IngredientBound(per_meal_min=50.0, step=25.0),
+            "tomato": IngredientBound(per_meal_min=60.0),
+            "cheese": IngredientBound(per_meal_min=30.0),
+        },
+    )
+
+
+def test_diagnose_snack_kcal_cap_conflict():
+    """The exact failure mode the user hit: many ingredients in a custom
+    snack whose serving floors sum past the snack's kcal cap."""
+    problem = _toast_problem()
+    msgs = diagnose_infeasibility(
+        problem,
+        DayLog(log_date=date(2026, 5, 21)),
+        custom_slots={
+            "snack": CustomSlot(
+                ingredients=("deli_chicken", "toast_bread", "tomato", "cheese"),
+            ),
+        },
+    )
+    assert msgs, "diagnostic should report at least one cause"
+    joined = " ".join(msgs)
+    assert "kcal" in joined.lower()
+    assert "300" in joined  # the cap
+    # The biggest contributor at the floor is toast_bread (50 g × 250 = 125).
+    assert "toast_bread" in joined
+
+
+def test_diagnose_returns_empty_for_feasible_setup():
+    """When the problem is actually feasible, the diagnostic stays silent
+    (no false positives)."""
+    problem = _toast_problem()
+    msgs = diagnose_infeasibility(
+        problem,
+        DayLog(log_date=date(2026, 5, 21)),
+        custom_slots={
+            "snack": CustomSlot(ingredients=("deli_chicken", "tomato")),
+            # 100×1.02 + 60×0.18 = 113 kcal min, well under 300.
+        },
+    )
+    assert msgs == []
+
+
+def test_diagnose_daily_total_max_conflict():
+    """If a stepped ingredient's daily cap is already used up by what's
+    logged, the diagnostic should flag it instead of an opaque solver
+    error."""
+    tortilla = Ingredient(name="tortilla", macros={"kcal": 292.0, "carbs": 45.0})
+    chicken = Ingredient(name="chicken", macros={"kcal": 100.0, "protein": 20.0})
+    meal = LibraryMeal(
+        name="wrap",
+        tag="lunch_dinner",
+        ingredients=("tortilla", "chicken"),
+    )
+    problem = Problem(
+        ingredients=(tortilla, chicken),
+        targets=(MacroTarget(name="kcal", value=1800.0, weight=1.0),),
+        meal_library=(meal,),
+        bounds={
+            # One tortilla per day total; pinned to one 60 g unit per meal.
+            "tortilla": IngredientBound(
+                step=60.0, per_meal_min=60.0, per_meal_max=60.0, total_max=60.0
+            ),
+        },
+    )
+    log = DayLog(log_date=date(2026, 5, 21)).with_added(
+        LogEntry(ingredient="tortilla", grams=60.0)
+    )
+    msgs = diagnose_infeasibility(problem, log, {"lunch": "wrap"})
+    assert msgs, "should flag the daily tortilla cap"
+    joined = " ".join(msgs)
+    assert "tortilla" in joined.lower()
+    assert "daily" in joined.lower()
+
+
+def test_diagnose_respects_step_rounding():
+    """A step=55 ingredient with per_meal_min=5 actually contributes 55 g
+    (next reachable step), not 5 g. The diagnostic must use the rounded
+    value when reporting / detecting conflicts."""
+    eggs = Ingredient(name="eggs", macros={"kcal": 155.0, "protein": 13.0})
+    problem = Problem(
+        ingredients=(eggs,),
+        targets=(MacroTarget(name="kcal", value=1800.0, weight=1.0),),
+        meal_library=(),
+        # Eggs alone: min 55 g (one egg) → 85 kcal. Snack cap 80 → conflict.
+        tag_constraints={"snack": TagConstraints(macro_max={"kcal": 80.0})},
+        bounds={"eggs": IngredientBound(step=55.0, per_meal_min=5.0)},
+    )
+    msgs = diagnose_infeasibility(
+        problem,
+        DayLog(log_date=date(2026, 5, 21)),
+        custom_slots={"snack": CustomSlot(ingredients=("eggs",))},
+    )
+    assert msgs
+    joined = " ".join(msgs)
+    # Either the eggs grams (55) or the kcal at floor (~85) should appear.
+    assert "55" in joined or "85" in joined
+
+
+def test_diagnose_empty_when_nothing_planned():
+    """No saved meals and no custom slots → nothing to diagnose."""
+    problem = _toast_problem()
+    assert (
+        diagnose_infeasibility(problem, DayLog(log_date=date(2026, 5, 21))) == []
+    )

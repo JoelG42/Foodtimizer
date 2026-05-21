@@ -87,6 +87,17 @@ already eaten, then runs the LP on the remaining slots only:
 - Per-meal caps (e.g. *lunch ≤ 750 kcal*) are unchanged: they're per-slot
   rules, not daily ones.
 
+**When something's infeasible.** If the planner returns *"FAILED:
+infeasible"*, the UI now runs a heuristic diagnostic and surfaces the
+most likely cause — e.g. *"snack (custom): the listed ingredients force
+at least ~308 kcal, but the cap is 300. Top contributors: toast_bread
+(>=50 g -> 125 kcal), deli_chicken (>=100 g -> 102 kcal), cheese
+(>=30 g -> 70 kcal)."* It also catches daily caps that are already
+used up by what you logged earlier (e.g. tortilla
+`total_max_units: 1`). Use it programmatically via
+`foodtimizer.diagnose_infeasibility(problem, day_log, saved_plan,
+custom_slots=...)`.
+
 Programmatic equivalent:
 
 ```python

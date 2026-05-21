@@ -36,6 +36,7 @@ A :class:`Plan` containing both logged and optimized items:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from typing import Mapping
 
@@ -47,7 +48,7 @@ from .model import (
     PlanItem,
     Problem,
 )
-from .optimizer import optimize
+from .optimizer import _resolve_meal_max, _resolve_meal_min, optimize
 from .tracker import DayLog, compute_totals
 
 
@@ -366,3 +367,236 @@ def _bound_minus_consumed(b: IngredientBound, eaten: float) -> IngredientBound:
     new_total_min = max(0.0, b.total_min - eaten) if b.total_min is not None else None
     new_total_max = max(0.0, b.total_max - eaten) if b.total_max is not None else None
     return replace(b, total_min=new_total_min, total_max=new_total_max)
+
+
+# ---------------------------------------------------------------------------
+# Infeasibility diagnostics
+# ---------------------------------------------------------------------------
+
+
+def diagnose_infeasibility(
+    problem: Problem,
+    day_log: DayLog,
+    remaining_day_plan: Mapping[str, str] | None = None,
+    *,
+    custom_slots: Mapping[str, CustomSlot] | None = None,
+) -> list[str]:
+    """Heuristic explanation for why the planner is likely infeasible.
+
+    Returns a list of plain-English messages (markdown OK) that name the
+    most common *hard*-constraint conflicts. Returns an empty list if no
+    obvious conflict is found — in that case the infeasibility is from
+    something subtler (e.g. interaction between several caps at once) and
+    we punt to the raw HiGHS status.
+
+    The checks here mirror the bound resolution in :mod:`optimizer`, so a
+    "no obvious conflict" result is meaningful, not just silence.
+    """
+    saved_plan = dict(remaining_day_plan or {})
+    customs = dict(custom_slots or {})
+    try:
+        extended, day_plan = _attach_custom_slots(problem, saved_plan, customs)
+    except ValueError as e:
+        # Bad input shape — surface it verbatim, no need to dig further.
+        return [str(e)]
+
+    if not day_plan:
+        return []
+
+    slot_meals: dict[str, LibraryMeal] = {
+        slot: next(m for m in extended.meal_library if m.name == name)
+        for slot, name in day_plan.items()
+    }
+    ingredient_map = {i.name: i for i in extended.ingredients}
+    consumed_grams = _consumed_grams_per_ingredient(day_log, ingredient_map)
+
+    messages: list[str] = []
+    for slot, meal in slot_meals.items():
+        messages.extend(_diagnose_slot(slot, meal, extended, ingredient_map))
+    messages.extend(_diagnose_daily_totals(extended, slot_meals, consumed_grams))
+    return messages
+
+
+def _diagnose_slot(
+    slot: str,
+    meal: LibraryMeal,
+    problem: Problem,
+    ingredient_map: Mapping[str, object],
+) -> list[str]:
+    """Per-slot conflicts: tag/meal kcal & macro caps vs. forced minimums,
+    and macro floors vs. attainable maximums."""
+    if not meal.ingredients:
+        return []
+
+    label = _slot_label(slot, meal)
+    eff_min_g, eff_max_g = _effective_bounds_per_ingredient(meal, problem)
+
+    msgs: list[str] = []
+
+    # Macros we should check: every macro that has any per-slot bound on
+    # this meal (per-meal override or tag-level cap/floor).
+    macros: set[str] = set(meal.macro_max) | set(meal.macro_min)
+    tc = problem.tag_constraints.get(meal.tag)
+    if tc is not None:
+        macros |= set(tc.macro_max) | set(tc.macro_min)
+
+    for macro in macros:
+        cap = _combine_cap(meal.macro_max.get(macro), tc.macro_max.get(macro) if tc else None)
+        floor = _combine_floor(
+            meal.macro_min.get(macro), tc.macro_min.get(macro) if tc else None
+        )
+
+        if cap is not None:
+            min_total, contribs = _macro_sum(meal.ingredients, ingredient_map, eff_min_g, macro)
+            if min_total > cap + 1e-6:
+                msgs.append(_cap_message(label, macro, min_total, cap, contribs))
+
+        if floor is not None:
+            # Only a meaningful check if *every* ingredient has a finite cap;
+            # otherwise the optimizer can always trivially reach any floor.
+            if all(math.isfinite(eff_max_g[i]) for i in meal.ingredients):
+                max_total, _ = _macro_sum(meal.ingredients, ingredient_map, eff_max_g, macro)
+                if max_total < floor - 1e-6:
+                    msgs.append(_floor_message(label, macro, max_total, floor))
+
+    return msgs
+
+
+def _diagnose_daily_totals(
+    problem: Problem,
+    slot_meals: Mapping[str, LibraryMeal],
+    consumed_grams: Mapping[str, float],
+) -> list[str]:
+    """Daily ``total_max`` / ``total_min`` conflicts across all planned slots."""
+    msgs: list[str] = []
+    for ing_name, ib in problem.bounds.items():
+        # Sum forced per-meal minimums (step-adjusted) for this ingredient
+        # across every slot that lists it.
+        planned_min = 0.0
+        planned_max = 0.0
+        for meal in slot_meals.values():
+            if ing_name not in meal.ingredients:
+                continue
+            mn = _resolve_meal_min(meal, ing_name, problem) or 0.0
+            mx = _resolve_meal_max(meal, ing_name, problem)
+            if ib.step:
+                mn = math.ceil(mn / ib.step) * ib.step
+                if mx is not None:
+                    mx = math.floor(mx / ib.step) * ib.step
+            planned_min += mn
+            planned_max += mx if mx is not None else math.inf
+
+        eaten = consumed_grams.get(ing_name, 0.0)
+        if ib.total_max is not None and eaten + planned_min > ib.total_max + 1e-6:
+            msgs.append(
+                f"**Daily cap**: `{ing_name}` is capped at {ib.total_max:.0f} g/day. "
+                f"You've eaten {eaten:.0f} g and the planned slots force at least "
+                f"{planned_min:.0f} g more — total would be {eaten + planned_min:.0f} g. "
+                "Drop this ingredient from a slot or raise its `total_max`."
+            )
+        if (
+            ib.total_min is not None
+            and math.isfinite(planned_max)
+            and eaten + planned_max < ib.total_min - 1e-6
+        ):
+            msgs.append(
+                f"**Daily floor**: `{ing_name}` needs ≥ {ib.total_min:.0f} g/day. "
+                f"You've eaten {eaten:.0f} g and the planned slots can fit at most "
+                f"{planned_max:.0f} g more. Add it to another slot or relax the floor."
+            )
+    return msgs
+
+
+def _effective_bounds_per_ingredient(
+    meal: LibraryMeal, problem: Problem
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Per-ingredient (effective_min_g, effective_max_g) for one meal.
+
+    Mirrors the optimizer's bound resolution and additionally **rounds
+    stepped ingredients up/down to the nearest reachable grid point** so
+    the diagnostic uses the same effective floor the LP sees.
+    """
+    eff_min: dict[str, float] = {}
+    eff_max: dict[str, float] = {}
+    for ing in meal.ingredients:
+        mn = _resolve_meal_min(meal, ing, problem) or 0.0
+        mx = _resolve_meal_max(meal, ing, problem)
+        ib = problem.bounds.get(ing)
+        if ib is not None and ib.step is not None:
+            mn = math.ceil(mn / ib.step) * ib.step
+            if mx is not None:
+                mx = math.floor(mx / ib.step) * ib.step
+        eff_min[ing] = mn
+        eff_max[ing] = mx if mx is not None else math.inf
+    return eff_min, eff_max
+
+
+def _macro_sum(
+    ingredients: tuple[str, ...],
+    ingredient_map: Mapping[str, object],
+    grams: Mapping[str, float],
+    macro: str,
+) -> tuple[float, list[tuple[str, float, float]]]:
+    """Return ``(total, [(ing, contribution_to_macro, grams), ...])``
+    sorted by contribution descending. Used to pick the top offenders
+    for the message."""
+    rows: list[tuple[str, float, float]] = []
+    total = 0.0
+    for ing in ingredients:
+        g = grams[ing]
+        per100 = ingredient_map[ing].amount_for(macro)  # type: ignore[attr-defined]
+        contrib = g * per100 / 100.0
+        total += contrib
+        rows.append((ing, contrib, g))
+    rows.sort(key=lambda r: -r[1])
+    return total, rows
+
+
+def _combine_cap(*caps: float | None) -> float | None:
+    """Tightest (smallest) of the given caps, ignoring ``None``."""
+    vals = [c for c in caps if c is not None]
+    return min(vals) if vals else None
+
+
+def _combine_floor(*floors: float | None) -> float | None:
+    """Tightest (largest) of the given floors, ignoring ``None``."""
+    vals = [f for f in floors if f is not None]
+    return max(vals) if vals else None
+
+
+def _cap_message(
+    label: str,
+    macro: str,
+    min_total: float,
+    cap: float,
+    contribs: list[tuple[str, float, float]],
+) -> str:
+    unit = "kcal" if macro == "kcal" else f"g {macro}"
+    top = ", ".join(
+        f"`{ing}` (≥{grams:g} g → {contrib:.0f} {unit})"
+        for ing, contrib, grams in contribs[:3]
+        if contrib > 0
+    )
+    return (
+        f"**{label}**: the listed ingredients force at least "
+        f"~{min_total:.0f} {unit}, but the cap is {cap:.0f}. "
+        f"Top contributors: {top}. "
+        "Drop or shrink one of those, or raise the cap "
+        "(`tag_constraints.<tag>.kcal_max` or `macro_max`)."
+    )
+
+
+def _floor_message(label: str, macro: str, max_total: float, floor: float) -> str:
+    unit = "kcal" if macro == "kcal" else f"g {macro}"
+    return (
+        f"**{label}**: even maxing out every listed ingredient, "
+        f"{macro} only reaches ~{max_total:.0f} {unit}, but the floor is "
+        f"{floor:.0f}. Add an ingredient that contributes more "
+        f"{macro}, or lower the floor."
+    )
+
+
+def _slot_label(slot: str, meal: LibraryMeal) -> str:
+    if meal.name.startswith(CUSTOM_MEAL_PREFIX):
+        return f"{slot} (custom)"
+    return f"{slot} ({meal.name})"

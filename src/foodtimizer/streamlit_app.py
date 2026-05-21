@@ -27,6 +27,7 @@ from foodtimizer.replan import (
     CUSTOM_MEAL_PREFIX,
     LOGGED_MEAL_LABEL,
     CustomSlot,
+    diagnose_infeasibility,
     plan_remaining,
 )
 from foodtimizer.tracker import (
@@ -494,6 +495,29 @@ def _render_planner(
         )
     except Exception as e:  # noqa: BLE001 - surface to UI
         st.error(f"Could not plan: {e}")
+        return
+
+    # On infeasibility, run the heuristic diagnostic so the user sees
+    # which hard constraint is conflicting instead of an opaque HiGHS
+    # status line. Only on failure to avoid noise on the happy path.
+    if plan.status.startswith("FAILED"):
+        st.error(f"Optimizer failed: {plan.status}")
+        try:
+            reasons = diagnose_infeasibility(
+                problem, log, saved_plan, custom_slots=custom_plan or None
+            )
+        except Exception as e:  # noqa: BLE001 - diagnostic must never crash UI
+            reasons = [f"(diagnostic itself failed: {e})"]
+        if reasons:
+            st.markdown("**Likely cause(s):**")
+            for r in reasons:
+                st.markdown(f"- {r}")
+        else:
+            st.caption(
+                "No single obvious conflict detected — the infeasibility "
+                "is from an interaction between several constraints. "
+                "Try removing one ingredient at a time."
+            )
         return
 
     _render_combined_plan(plan, problem, ingredient_map)

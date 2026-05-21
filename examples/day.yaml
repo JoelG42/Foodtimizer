@@ -289,6 +289,7 @@ meal_library:
       toast_bread: 50
       tomato: 30
       sriracha_mayo: 10
+      cheese: 20
 # `ingredient_bounds:` is no longer needed for typical usage — bound info
 # lives next to each ingredient above. You *can* still add an
 # `ingredient_bounds:` section here to override any field on a per-ingredient
