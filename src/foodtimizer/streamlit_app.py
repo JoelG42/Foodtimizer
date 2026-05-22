@@ -208,19 +208,102 @@ def _format_macro_value(grams: float, ing: Ingredient | None, macro: str) -> str
     return f"{val:.0f}" if macro == "kcal" else f"{val:.1f}"
 
 
+# Slot order used to lay out the per-meal sections of the log. Anything
+# not in this tuple (e.g. a user-defined slot like "second_lunch") shows
+# up after these in alphabetical order; entries with no slot at all
+# render last under an "Unassigned" header.
+_LOG_SLOT_ORDER: tuple[str, ...] = ("breakfast", "lunch", "dinner", "snack")
+_UNASSIGNED_SLOT_LABEL = "Unassigned"
+
+
+def _group_entries_by_slot(
+    entries: tuple[LogEntry, ...],
+) -> list[tuple[str, list[tuple[int, LogEntry]]]]:
+    """Group entries by slot, preserving each entry's original index.
+
+    Returns ``[(slot_label, [(orig_idx, entry), ...]), ...]`` in the
+    canonical slot order, then any other slots alphabetically, then the
+    unassigned bucket. The original index is what ``DayLog.with_removed``
+    and the per-row delete buttons key off, so threading it through here
+    keeps delete-by-row working correctly even when groups reorder rows.
+    """
+    groups: dict[str, list[tuple[int, LogEntry]]] = {}
+    for idx, entry in enumerate(entries):
+        key = entry.slot or _UNASSIGNED_SLOT_LABEL
+        groups.setdefault(key, []).append((idx, entry))
+
+    ordered: list[tuple[str, list[tuple[int, LogEntry]]]] = []
+    seen: set[str] = set()
+    for slot in _LOG_SLOT_ORDER:
+        if slot in groups:
+            ordered.append((slot, groups[slot]))
+            seen.add(slot)
+    extras = sorted(
+        s for s in groups if s not in seen and s != _UNASSIGNED_SLOT_LABEL
+    )
+    for s in extras:
+        ordered.append((s, groups[s]))
+    if _UNASSIGNED_SLOT_LABEL in groups:
+        ordered.append((_UNASSIGNED_SLOT_LABEL, groups[_UNASSIGNED_SLOT_LABEL]))
+    return ordered
+
+
+def _render_slot_headline(
+    slot_label: str,
+    indexed_entries: list[tuple[int, LogEntry]],
+    ingredient_map: dict[str, Ingredient],
+    macros: list[str],
+    weights: list[int],
+) -> None:
+    """Render the per-slot totals row, aligned to the column layout so
+    each macro total sits directly under its column header.
+
+    Total grams goes in the ``Grams`` column; per-macro totals fill the
+    macro columns. ``Time``, ``Slot`` and the delete column are left
+    blank — the slot name is rendered as a subheader above.
+    """
+    total_grams = sum(e.grams for _, e in indexed_entries)
+    totals: dict[str, float] = {m: 0.0 for m in macros}
+    for _, e in indexed_entries:
+        ing = ingredient_map.get(e.ingredient)
+        if ing is None:
+            # Unknown ingredient contributes 0 to macros but its grams
+            # still count, so the user sees it in the row breakdown.
+            continue
+        for m in macros:
+            totals[m] += e.grams * ing.amount_for(m) / 100.0
+
+    n = len(indexed_entries)
+    st.markdown(f"##### {slot_label} · {n} item{'' if n == 1 else 's'}")
+
+    cols = st.columns(weights)
+    cols[1].markdown("**Total**")
+    cols[3].markdown(f"**{total_grams:.0f} g**")
+    for j, m in enumerate(macros):
+        val = totals[m]
+        # kcal is whole-number; macro grams keep one decimal so the
+        # totals look consistent with `_format_macro_value` per row.
+        formatted = f"{val:.0f}" if m == "kcal" else f"{val:.1f}"
+        cols[4 + j].markdown(f"**{formatted}**")
+
+
 def _render_entries(
     log: DayLog,
     logs_dir: str,
     ingredient_map: dict[str, Ingredient],
     macros: list[str],
 ) -> None:
-    """Render the day's entries with per-row delete buttons.
+    """Render the day's entries grouped by slot, each group prefixed with
+    a totals headline.
 
     Macro columns are taken from ``macros`` (typically every targeted
     macro), so adding ``fat`` / ``fibre`` to the config makes them show
     up here automatically.
     """
-    st.subheader(f"Today's log · {len(log.entries)} entr{'y' if len(log.entries) == 1 else 'ies'}")
+    st.subheader(
+        f"Today's log · {len(log.entries)} "
+        f"entr{'y' if len(log.entries) == 1 else 'ies'}"
+    )
 
     if not log.entries:
         st.info("Nothing logged yet for this day. Add your first entry above.")
@@ -240,29 +323,35 @@ def _render_entries(
     for c, label in zip(hdr, labels):
         c.markdown(f"**{label}**")
 
-    for i, entry in enumerate(log.entries):
-        cols = st.columns(weights)
-        # Time: just hh:mm if we have an ISO timestamp
-        if entry.eaten_at:
-            try:
-                t = datetime.fromisoformat(entry.eaten_at).strftime("%H:%M")
-            except ValueError:
-                t = entry.eaten_at[:16]
-        else:
-            t = "—"
-        cols[0].write(t)
-        cols[1].write(entry.ingredient)
-        cols[2].write(entry.slot or "")
-        cols[3].write(f"{entry.grams:.0f} g")
+    for slot_label, indexed_entries in _group_entries_by_slot(log.entries):
+        _render_slot_headline(
+            slot_label, indexed_entries, ingredient_map, macros, weights
+        )
 
-        ing = ingredient_map.get(entry.ingredient)
-        for j, macro in enumerate(macros):
-            cols[4 + j].write(_format_macro_value(entry.grams, ing, macro))
+        for orig_idx, entry in indexed_entries:
+            cols = st.columns(weights)
+            # Time: just hh:mm if we have an ISO timestamp
+            if entry.eaten_at:
+                try:
+                    t = datetime.fromisoformat(entry.eaten_at).strftime("%H:%M")
+                except ValueError:
+                    t = entry.eaten_at[:16]
+            else:
+                t = "—"
+            cols[0].write(t)
+            cols[1].write(entry.ingredient)
+            cols[2].write(entry.slot or "")
+            cols[3].write(f"{entry.grams:.0f} g")
 
-        if cols[-1].button("🗑", key=f"del_{i}", help="Delete entry"):
-            new_log = log.with_removed(i)
-            save_day_log(logs_dir, new_log)
-            st.rerun()
+            ing = ingredient_map.get(entry.ingredient)
+            for j, macro in enumerate(macros):
+                cols[4 + j].write(_format_macro_value(entry.grams, ing, macro))
+
+            # Key off the *original* index so deletes work after grouping.
+            if cols[-1].button("🗑", key=f"del_{orig_idx}", help="Delete entry"):
+                new_log = log.with_removed(orig_idx)
+                save_day_log(logs_dir, new_log)
+                st.rerun()
 
 
 def _render_totals(problem: Problem, totals: dict[str, float]) -> None:
@@ -314,6 +403,34 @@ _SLOT_TO_TAG: dict[str, str] = {
 _MODE_SAVED = "Saved meal"
 _MODE_CUSTOM = "Custom ingredients"
 
+_SLOT_INSTANCE_SEP = " #"
+
+
+def _base_slot(label: str) -> str:
+    return label.split(_SLOT_INSTANCE_SEP, 1)[0]
+
+
+def _is_first_instance(label: str) -> bool:
+    return (
+        _SLOT_INSTANCE_SEP not in label
+        or label.endswith(f"{_SLOT_INSTANCE_SEP}1")
+    )
+
+
+def _expand_slot_labels(
+    selected_types: list[str], counts: dict[str, int]
+) -> list[str]:
+    expanded: list[str] = []
+    for slot in selected_types:
+        n = max(1, int(counts.get(slot, 1)))
+        if n == 1:
+            expanded.append(slot)
+        else:
+            expanded.extend(
+                f"{slot}{_SLOT_INSTANCE_SEP}{i + 1}" for i in range(n)
+            )
+    return expanded
+
 
 def _seed_ingredients_from_base(slot: str, library_meals: dict[str, tuple[str, ...]]) -> None:
     """Streamlit ``on_change`` callback: when the user picks a 'start
@@ -362,16 +479,45 @@ def _render_planner(
     logged_slots = {e.slot for e in log.entries if e.slot}
     default_slots = [s for s in _SLOT_TO_TAG if s not in logged_slots]
 
-    selected = st.multiselect(
+    selected_types = st.multiselect(
         "Which slots still need planning?",
         options=list(_SLOT_TO_TAG.keys()),
         default=default_slots,
-        help="Slots ticked here will be filled by the optimizer.",
+        help=(
+            "Slots ticked here will be filled by the optimizer. To plan "
+            "two of the same kind (e.g. a morning AND an afternoon snack), "
+            "bump the per-slot count below."
+        ),
     )
 
-    if not selected:
+    if not selected_types:
         st.caption("Pick at least one slot to enable planning.")
         return
+
+    # Per-slot-type counts let the user plan multiple meals of the same
+    # kind in one session (e.g. two snacks). One small number_input per
+    # selected type, laid out in a single row to stay compact when the
+    # default count of 1 is fine.
+    slot_counts: dict[str, int] = {}
+    st.caption("How many of each?")
+    count_cols = st.columns(max(1, len(selected_types)))
+    for col, slot in zip(count_cols, selected_types):
+        slot_counts[slot] = int(
+            col.number_input(
+                slot,
+                min_value=1,
+                max_value=5,
+                value=1,
+                step=1,
+                key=f"plan_count_{slot}",
+                help=(
+                    f"Number of `{slot}` slots to plan. Each one gets its "
+                    "own meal / ingredient picker below."
+                ),
+            )
+        )
+
+    expanded_labels = _expand_slot_labels(selected_types, slot_counts)
 
     saved_plan: dict[str, str] = {}
     custom_plan: dict[str, CustomSlot] = {}
@@ -380,20 +526,20 @@ def _render_planner(
     all_meal_names = sorted(library_meals_ings)
     tag_options = [""] + sorted(problem.tag_constraints.keys())
 
-    for slot in selected:
+    for label in expanded_labels:
+        base = _base_slot(label)
         with st.container(border=True):
-            st.markdown(f"#### {slot}")
+            st.markdown(f"#### {label}")
             mode = st.radio(
-                f"{slot}-mode",
+                f"{label}-mode",
                 options=[_MODE_SAVED, _MODE_CUSTOM],
-                key=f"plan_mode_{slot}",
+                key=f"plan_mode_{label}",
                 horizontal=True,
                 label_visibility="collapsed",
             )
 
             if mode == _MODE_SAVED:
-                # Saved-meal branch: dropdown filtered by the slot's tag.
-                tag = _SLOT_TO_TAG.get(slot)
+                tag = _SLOT_TO_TAG.get(base)
                 candidates = sorted(meals_by_tag.get(tag, [])) if tag else all_meal_names
                 if not candidates:
                     st.warning(
@@ -401,16 +547,18 @@ def _render_planner(
                         "Switch this slot to *Custom ingredients* or add a saved meal."
                     )
                     continue
-                default_meal = problem.default_day.get(slot)
+                default_meal = (
+                    problem.default_day.get(base) if _is_first_instance(label) else None
+                )
                 idx = candidates.index(default_meal) if default_meal in candidates else 0
                 chosen = st.selectbox(
                     "Meal",
                     options=candidates,
                     index=idx,
-                    key=f"plan_meal_{slot}",
+                    key=f"plan_meal_{label}",
                 )
                 if chosen:
-                    saved_plan[slot] = chosen
+                    saved_plan[label] = chosen
             else:
                 # Custom-ingredients branch: optional base + multiselect + tag.
                 base_options = [""] + all_meal_names
@@ -418,20 +566,20 @@ def _render_planner(
                     "Start from an existing meal (optional)",
                     options=base_options,
                     index=0,
-                    key=f"plan_base_{slot}",
+                    key=f"plan_base_{label}",
                     format_func=lambda x: x or "— none —",
                     help=(
                         "Pre-fill the ingredient list with a saved meal's "
                         "ingredients, then add / remove items below."
                     ),
                     on_change=_seed_ingredients_from_base,
-                    args=(slot, library_meals_ings),
+                    args=(label, library_meals_ings),
                 )
 
                 picked = st.multiselect(
                     "Ingredients",
                     options=all_ingredient_names,
-                    key=f"plan_ingredients_{slot}",
+                    key=f"plan_ingredients_{label}",
                     help=(
                         "Pick any combination of ingredients. The optimizer "
                         "will choose gram amounts to hit your macros, "
@@ -442,13 +590,13 @@ def _render_planner(
                 # Tag dropdown. "" means "no tag-level constraints applied",
                 # which is the most permissive setting and matches the
                 # spirit of an ad-hoc meal.
-                default_tag = _SLOT_TO_TAG.get(slot, "")
+                default_tag = _SLOT_TO_TAG.get(base, "")
                 idx = tag_options.index(default_tag) if default_tag in tag_options else 0
                 chosen_tag = st.selectbox(
                     "Apply tag constraints",
                     options=tag_options,
                     index=idx,
-                    key=f"plan_tag_{slot}",
+                    key=f"plan_tag_{label}",
                     format_func=lambda t: t or "(none — fewest restrictions)",
                     help=(
                         "Which tag's kcal cap / macro_min / macro_max should "
@@ -461,7 +609,7 @@ def _render_planner(
                     # `chosen_tag` is already either a real tag name or
                     # the empty string ("(none)"). Pass it through verbatim;
                     # CustomSlot.tag == "" means "no tag constraints".
-                    custom_plan[slot] = CustomSlot(
+                    custom_plan[label] = CustomSlot(
                         ingredients=tuple(picked),
                         tag=chosen_tag,
                     )
