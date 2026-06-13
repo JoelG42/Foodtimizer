@@ -627,6 +627,18 @@ def _render_planner(
         ),
     )
 
+    use_fallback = st.checkbox(
+        "Auto-relax constraints if the strict solve fails",
+        value=True,
+        help=(
+            "If the strict LP says infeasible (e.g. a snack's kcal cap "
+            "collides with its forced minimums), retry with per-slot "
+            "caps and per-meal floors dropped. Daily total caps, step "
+            "sizes and a hard daily kcal ceiling are still respected, "
+            "so calories stay below the daily target."
+        ),
+    )
+
     if not st.button("🧮 Plan remaining slots", type="primary", use_container_width=True):
         return
     if not saved_plan and not custom_plan:
@@ -640,6 +652,7 @@ def _render_planner(
             saved_plan,
             anchor_weight=anchor_weight,
             custom_slots=custom_plan or None,
+            fallback=use_fallback,
         )
     except Exception as e:  # noqa: BLE001 - surface to UI
         st.error(f"Could not plan: {e}")
@@ -667,6 +680,14 @@ def _render_planner(
                 "Try removing one ingredient at a time."
             )
         return
+
+    if plan.status.startswith("FALLBACK"):
+        st.warning(
+            "Strict solve was infeasible, so the planner relaxed "
+            "per-slot caps and per-meal floors to give you a best-effort "
+            "plan. Daily totals and step sizes are still respected, and "
+            "kcal is hard-capped at the daily target."
+        )
 
     _render_combined_plan(plan, problem, ingredient_map)
 

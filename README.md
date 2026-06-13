@@ -98,6 +98,16 @@ used up by what you logged earlier (e.g. tortilla
 `foodtimizer.diagnose_infeasibility(problem, day_log, saved_plan,
 custom_slots=...)`.
 
+**Fallback solve.** The planner has a *"Auto-relax constraints if the
+strict solve fails"* checkbox (on by default). When the strict LP says
+infeasible, the planner retries with per-slot caps and per-meal floors
+dropped, then re-runs. Daily total caps, step sizes (whole eggs, whole
+tortillas) and a hard daily kcal ceiling are still respected, so the
+result stays physically sensible and stays below the daily target.
+The status is prefixed `FALLBACK:` so you can tell it kicked in, and
+the UI shows a warning banner. Programmatic equivalent:
+`plan_remaining(..., fallback=True)`.
+
 Programmatic equivalent:
 
 ```python

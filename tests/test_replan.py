@@ -629,3 +629,158 @@ def test_diagnose_empty_when_nothing_planned():
     assert (
         diagnose_infeasibility(problem, DayLog(log_date=date(2026, 5, 21))) == []
     )
+
+
+# ---------------------------------------------------------------------------
+# Fallback solve
+# ---------------------------------------------------------------------------
+
+
+def test_fallback_unblocks_snack_kcal_cap_conflict():
+    """The exact failure mode the user hit: snack cap collides with
+    forced minimums. With fallback=True the planner should still return
+    a usable plan that respects the daily kcal target as a hard ceiling."""
+    problem = _toast_problem()  # snack cap 300 kcal; defined in earlier section
+    # Replicate the user's failing setup: many ingredients in a snack
+    # whose serving floors sum past the 300 kcal cap.
+    custom = {
+        "snack": CustomSlot(
+            ingredients=("deli_chicken", "toast_bread", "tomato", "cheese"),
+        )
+    }
+    log = DayLog(log_date=date(2026, 5, 21))
+
+    # Without fallback: infeasible.
+    strict = plan_remaining(problem, log, custom_slots=custom)
+    assert strict.status.startswith("FAILED")
+
+    # With fallback: feasible, and the status is annotated.
+    relaxed = plan_remaining(problem, log, custom_slots=custom, fallback=True)
+    assert not relaxed.status.startswith("FAILED")
+    assert relaxed.status.startswith("FALLBACK")
+
+
+def test_fallback_respects_daily_kcal_hard_cap():
+    """Fallback drops per-slot caps but must NEVER let total kcal exceed
+    the daily target (which becomes a hard upper bound). That's the user
+    explicit request: stay below 1800."""
+    rice = Ingredient(name="rice", macros={"kcal": 350.0, "carbs": 77.0})
+    beef = Ingredient(name="beef", macros={"kcal": 250.0, "protein": 26.0})
+    problem = Problem(
+        ingredients=(rice, beef),
+        targets=(
+            MacroTarget(name="kcal", value=1800.0, weight=50.0),
+            MacroTarget(name="protein", value=135.0, weight=25.0),
+        ),
+        meal_library=(),
+    )
+    custom = {"lunch": CustomSlot(ingredients=("rice", "beef"))}
+    plan = plan_remaining(
+        problem,
+        DayLog(log_date=date(2026, 5, 21)),
+        custom_slots=custom,
+        fallback=True,
+    )
+    assert not plan.status.startswith("FAILED")
+    total_kcal = sum(
+        it.grams * (rice.amount_for("kcal") if it.ingredient == "rice" else beef.amount_for("kcal")) / 100.0
+        for it in plan.items
+    )
+    # Hard cap should be honoured strictly. Allow a tiny solver epsilon.
+    assert total_kcal <= 1800.0 + 1e-3
+
+
+def test_fallback_aims_close_to_kcal_target():
+    """Fallback keeps the soft kcal target, so the LP should land near
+    1800 rather than at 0 or some random small number."""
+    rice = Ingredient(name="rice", macros={"kcal": 350.0, "carbs": 77.0})
+    beef = Ingredient(name="beef", macros={"kcal": 250.0, "protein": 26.0})
+    problem = Problem(
+        ingredients=(rice, beef),
+        targets=(
+            MacroTarget(name="kcal", value=1800.0, weight=50.0),
+            MacroTarget(name="protein", value=135.0, weight=25.0),
+        ),
+        meal_library=(),
+    )
+    custom = {"lunch": CustomSlot(ingredients=("rice", "beef"))}
+    plan = plan_remaining(
+        problem,
+        DayLog(log_date=date(2026, 5, 21)),
+        custom_slots=custom,
+        fallback=True,
+    )
+    total_kcal = sum(
+        it.grams * (rice.amount_for("kcal") if it.ingredient == "rice" else beef.amount_for("kcal")) / 100.0
+        for it in plan.items
+    )
+    # The soft target weight (50) dwarfs the anchor weight (default 0.05),
+    # so the LP should snap to (or very near) 1800 rather than settle low.
+    assert total_kcal >= 1700.0
+
+
+def test_fallback_keeps_daily_totals_and_steps():
+    """Fallback drops per-slot constraints but must keep physical daily
+    caps (e.g. one tortilla per day) and step sizes (whole eggs)."""
+    eggs = Ingredient(name="eggs", macros={"kcal": 155.0, "protein": 13.0})
+    problem = Problem(
+        ingredients=(eggs,),
+        targets=(MacroTarget(name="kcal", value=400.0, weight=50.0),),
+        meal_library=(),
+        bounds={
+            "eggs": IngredientBound(step=55.0, total_max=220.0),
+        },
+    )
+    plan = plan_remaining(
+        problem,
+        DayLog(log_date=date(2026, 5, 21)),
+        custom_slots={"snack": CustomSlot(ingredients=("eggs",))},
+        fallback=True,
+    )
+    assert not plan.status.startswith("FAILED")
+    total_egg_grams = sum(it.grams for it in plan.items if it.ingredient == "eggs")
+    # Multiples of 55 only.
+    assert abs(total_egg_grams % 55.0) < 1e-6
+    # And the daily cap of 4 eggs = 220 g is honoured.
+    assert total_egg_grams <= 220.0 + 1e-6
+
+
+def test_fallback_default_is_disabled_for_backwards_compat():
+    """Existing callers (and the CLI) should see no behaviour change
+    unless they opt in. The fallback only kicks in with fallback=True."""
+    problem = _toast_problem()
+    custom = {
+        "snack": CustomSlot(
+            ingredients=("deli_chicken", "toast_bread", "tomato", "cheese"),
+        )
+    }
+    plan = plan_remaining(
+        problem, DayLog(log_date=date(2026, 5, 21)), custom_slots=custom
+    )
+    assert plan.status.startswith("FAILED")
+
+
+def test_fallback_does_not_mutate_input_problem():
+    """Like plan_remaining itself, the fallback must build a derived
+    problem and leave the caller's Problem untouched."""
+    problem = _toast_problem()
+    snapshot_defaults = problem.defaults
+    snapshot_bounds = problem.bounds
+    snapshot_tag_constraints = problem.tag_constraints
+    snapshot_meal_library = problem.meal_library
+
+    plan_remaining(
+        problem,
+        DayLog(log_date=date(2026, 5, 21)),
+        custom_slots={
+            "snack": CustomSlot(
+                ingredients=("deli_chicken", "toast_bread", "tomato", "cheese"),
+            )
+        },
+        fallback=True,
+    )
+
+    assert problem.defaults is snapshot_defaults
+    assert problem.bounds is snapshot_bounds
+    assert problem.tag_constraints is snapshot_tag_constraints
+    assert problem.meal_library is snapshot_meal_library

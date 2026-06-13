@@ -44,9 +44,11 @@ from .model import (
     IngredientBound,
     LibraryMeal,
     MacroTarget,
+    MealIngredient,
     Plan,
     PlanItem,
     Problem,
+    TagConstraints,
 )
 from .optimizer import _resolve_meal_max, _resolve_meal_min, optimize
 from .tracker import DayLog, compute_totals
@@ -117,6 +119,7 @@ def plan_remaining(
     *,
     anchor_weight: float | None = None,
     custom_slots: Mapping[str, CustomSlot] | None = None,
+    fallback: bool = False,
 ) -> Plan:
     """Plan ``remaining_day_plan`` + ``custom_slots`` given what's in ``day_log``.
 
@@ -169,8 +172,11 @@ def plan_remaining(
             extended_problem, consumed_macros, consumed_grams
         )
         plan = optimize(derived, full_day_plan, anchor_weight=anchor_weight)
+        if plan.status.startswith("FAILED") and fallback:
+            plan = _try_fallback_solve(
+                derived, full_day_plan, anchor_weight=anchor_weight
+            )
         if plan.status.startswith("FAILED"):
-            # Surface the failure verbatim; caller decides how to display.
             return plan
         optimized_items = plan.items
         optimized_slot_meals = plan.slot_meals
@@ -600,3 +606,91 @@ def _slot_label(slot: str, meal: LibraryMeal) -> str:
     if meal.name.startswith(CUSTOM_MEAL_PREFIX):
         return f"{slot} (custom)"
     return f"{slot} ({meal.name})"
+
+
+def _try_fallback_solve(
+    problem: Problem,
+    day_plan: Mapping[str, str],
+    *,
+    anchor_weight: float | None,
+) -> Plan:
+    """Build a relaxed copy of the problem and re-run the optimizer.
+
+    Returns the relaxed plan with its status prefixed FALLBACK so the
+    caller (and the UI) can warn the user that some constraints were
+    ignored. If even the relaxed problem is infeasible (rare; means a
+    daily total cap is itself unsatisfiable), the raw FAILED status
+    bubbles up unchanged.
+    """
+    relaxed = _relax_for_fallback(problem)
+    plan = optimize(relaxed, day_plan, anchor_weight=anchor_weight)
+    if plan.status.startswith("FAILED"):
+        return plan
+    return replace(plan, status="FALLBACK: " + plan.status)
+
+
+def _relax_for_fallback(problem: Problem) -> Problem:
+    """Return a copy of the problem with the constraints most likely to
+    cause infeasibility removed, while keeping physical realities and a
+    hard daily-kcal ceiling.
+
+    Dropped (these typically clash with each other):
+    per-slot kcal/macro caps and floors (tag-level and per-meal
+    overrides); per-meal grammage floors and ceilings on each ingredient
+    (defaults, ingredient bounds, MealIngredient.min/max); the main flag
+    (which would otherwise re-engage defaults.main_min).
+
+    Kept (physical or user-chosen daily limits):
+    stepped integrality (so eggs stay whole, tortillas whole); daily
+    total_min / total_max bounds per ingredient; macro target uppers and
+    lowers; meal-ingredient anchors (soft pulls, never infeasible).
+
+    Plus: if the kcal target has a value but no explicit upper, we
+    promote value to a hard upper so the fallback honours the user's
+    "stay below the daily target" intent.
+    """
+    new_defaults = replace(
+        problem.defaults,
+        per_meal_min=None,
+        per_meal_max=None,
+        main_min=None,
+    )
+
+    new_bounds: dict[str, IngredientBound] = {}
+    for name, ib in problem.bounds.items():
+        new_bounds[name] = replace(ib, per_meal_min=None, per_meal_max=None)
+
+    new_tag_constraints: dict[str, TagConstraints] = {
+        tag: TagConstraints() for tag in problem.tag_constraints
+    }
+
+    new_meals: list[LibraryMeal] = []
+    for meal in problem.meal_library:
+        new_specs = {
+            ing: MealIngredient(anchor=spec.anchor)
+            for ing, spec in meal.ingredient_specs.items()
+        }
+        new_meals.append(
+            replace(
+                meal,
+                macro_min={},
+                macro_max={},
+                ingredient_specs=new_specs,
+            )
+        )
+
+    new_targets: list[MacroTarget] = []
+    for tgt in problem.targets:
+        if tgt.name == "kcal" and tgt.value is not None and tgt.upper is None:
+            new_targets.append(replace(tgt, upper=tgt.value))
+        else:
+            new_targets.append(tgt)
+
+    return replace(
+        problem,
+        defaults=new_defaults,
+        bounds=new_bounds,
+        tag_constraints=new_tag_constraints,
+        meal_library=tuple(new_meals),
+        targets=tuple(new_targets),
+    )
