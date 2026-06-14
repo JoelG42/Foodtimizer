@@ -15,14 +15,32 @@ entries, see macro totals against the targets defined in the config.
 from __future__ import annotations
 
 import argparse
+import math
 import os
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
-from foodtimizer.config import load_problem
-from foodtimizer.model import Ingredient, MacroTarget, Plan, Problem
+from foodtimizer.config import load_problem, save_problem
+from foodtimizer.editor import (
+    INGREDIENT_BOUND_FIELDS,
+    all_macro_keys,
+    delete_ingredient,
+    delete_meal,
+    upsert_meal,
+)
+from foodtimizer.model import (
+    Ingredient,
+    IngredientBound,
+    LibraryMeal,
+    MacroTarget,
+    MealIngredient,
+    Plan,
+    Problem,
+)
 from foodtimizer.replan import (
     CUSTOM_MEAL_PREFIX,
     LOGGED_MEAL_LABEL,
@@ -78,7 +96,7 @@ def _macro_color(pct: float, lower_only: bool) -> str:
     return "red"
 
 
-def _render_sidebar(args: argparse.Namespace) -> tuple[Problem, str]:
+def _render_sidebar(args: argparse.Namespace) -> tuple[Problem, str, str]:
     """Sidebar: config + logs-dir picker, lightweight library stats.
 
     The YAML is re-read on every Streamlit rerun (no caching), so any UI
@@ -131,7 +149,7 @@ def _render_sidebar(args: argparse.Namespace) -> tuple[Problem, str]:
     if logged:
         st.sidebar.caption(f"{len(logged)} day(s) logged so far")
 
-    return problem, logs_dir
+    return problem, config_path, logs_dir
 
 
 def _render_add_form(problem: Problem, logs_dir: str, log: DayLog) -> None:
@@ -779,11 +797,393 @@ def _render_date_picker() -> date:
     return st.session_state["sel_date"]
 
 
-def main() -> None:
-    st.set_page_config(page_title="Foodtimizer Tracker", layout="wide")
-    args = _parse_args()
+# ---------------------------------------------------------------------------
+# Library editing pages (ingredient database + meal builder)
+# ---------------------------------------------------------------------------
 
-    problem, logs_dir = _render_sidebar(args)
+
+def _optnum(v: object) -> float | None:
+    """Coerce a data-editor cell to ``float | None`` (NaN / blank -> None)."""
+    if v is None:
+        return None
+    if isinstance(v, float) and math.isnan(v):
+        return None
+    if isinstance(v, str) and not v.strip():
+        return None
+    try:
+        return float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _persist_problem(problem: Problem, config_path: str, msg: str) -> None:
+    """Save ``problem`` to ``config_path`` then rerun so every page refreshes.
+
+    On the first overwrite of an existing config a timestamped ``.bak`` is
+    kept next to it (see :func:`save_problem`), so nothing is lost.
+    """
+    try:
+        save_problem(problem, config_path)
+    except Exception as e:  # noqa: BLE001 - surfaced to the UI
+        st.error(f"Could not save to `{config_path}`: {e}")
+        return
+    st.toast(msg, icon="💾")
+    st.rerun()
+
+
+_BOUND_HELP: dict[str, str] = {
+    "step": "Consumed in whole multiples of this many grams (e.g. eggs in 55 g units).",
+    "per_meal_min": "Minimum grams in any single meal that uses it (a.k.a. serving).",
+    "per_meal_max": "Maximum grams in any single meal.",
+    "total_min": "Minimum grams across the whole day.",
+    "total_max": "Maximum grams across the whole day (e.g. 60 g whey/day).",
+}
+
+
+def _render_ingredients_page(problem: Problem, config_path: str) -> None:
+    """Editable ingredient database: macros per 100 g + optional bounds."""
+    st.title("🥕 Ingredient database")
+    st.caption(
+        "Each ingredient's macros are per 100 g. Add rows at the bottom, edit "
+        "any cell, then **Save**. The bound columns on the right are optional "
+        "real-life limits the optimizer respects. Saved to "
+        f"`{config_path}`."
+    )
+
+    macro_keys = all_macro_keys(problem)
+    extra = [m for m in st.session_state.get("extra_macros", []) if m not in macro_keys]
+    macro_keys = macro_keys + extra
+
+    with st.expander("➕ Add a new nutrient column (e.g. sodium, sugar)"):
+        cols = st.columns([4, 1])
+        new_macro = cols[0].text_input(
+            "Nutrient name", key="new_macro_name", label_visibility="collapsed",
+            placeholder="e.g. sodium",
+        )
+        if cols[1].button("Add column", use_container_width=True):
+            nm = new_macro.strip()
+            if nm and nm not in macro_keys:
+                st.session_state.setdefault("extra_macros", []).append(nm)
+                st.rerun()
+
+    bounds = problem.bounds
+    rows: list[dict[str, object]] = []
+    for ing in problem.ingredients:
+        row: dict[str, object] = {"name": ing.name}
+        for m in macro_keys:
+            row[m] = float(ing.macros[m]) if m in ing.macros else None
+        b = bounds.get(ing.name)
+        for f in INGREDIENT_BOUND_FIELDS:
+            row[f] = float(getattr(b, f)) if b and getattr(b, f) is not None else None
+        rows.append(row)
+
+    columns = ["name"] + list(macro_keys) + list(INGREDIENT_BOUND_FIELDS)
+    df = pd.DataFrame(rows, columns=columns)
+
+    col_config: dict[str, object] = {
+        "name": st.column_config.TextColumn("ingredient", required=True),
+    }
+    for m in macro_keys:
+        fmt = "%d" if m == "kcal" else "%.1f"
+        col_config[m] = st.column_config.NumberColumn(m, min_value=0.0, format=fmt)
+    for f in INGREDIENT_BOUND_FIELDS:
+        col_config[f] = st.column_config.NumberColumn(
+            f, min_value=0.0, help=_BOUND_HELP.get(f)
+        )
+
+    edited = st.data_editor(
+        df,
+        column_config=col_config,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        key="ingredient_editor",
+    )
+
+    if st.button("💾 Save ingredients", type="primary"):
+        _save_ingredient_table(problem, config_path, edited, list(macro_keys))
+
+
+def _save_ingredient_table(
+    problem: Problem,
+    config_path: str,
+    edited: pd.DataFrame,
+    macro_keys: list[str],
+) -> None:
+    seen: set[str] = set()
+    ingredients: list[Ingredient] = []
+    new_bounds: dict[str, IngredientBound] = {}
+
+    for record in edited.to_dict("records"):
+        name = str(record.get("name") or "").strip()
+        if not name:
+            continue
+        if name in seen:
+            st.error(f"Duplicate ingredient name: '{name}'. Names must be unique.")
+            return
+        seen.add(name)
+
+        macros: dict[str, float] = {}
+        for m in macro_keys:
+            v = _optnum(record.get(m))
+            if v is not None:
+                macros[m] = v
+        ingredients.append(Ingredient(name=name, macros=macros))
+
+        bound_vals = {f: _optnum(record.get(f)) for f in INGREDIENT_BOUND_FIELDS}
+        if any(v is not None for v in bound_vals.values()):
+            new_bounds[name] = IngredientBound(
+                total_min=bound_vals["total_min"],
+                total_max=bound_vals["total_max"],
+                per_meal_min=bound_vals["per_meal_min"],
+                per_meal_max=bound_vals["per_meal_max"],
+                step=bound_vals["step"],
+            )
+
+    if not ingredients:
+        st.error("You need at least one ingredient.")
+        return
+
+    new_problem = replace(problem, ingredients=tuple(ingredients), bounds=new_bounds)
+
+    # Anything dropped from the table is removed from meals too, so we never
+    # leave a meal pointing at a non-existent ingredient.
+    removed = {i.name for i in problem.ingredients} - seen
+    for name in removed:
+        new_problem = delete_ingredient(new_problem, name)
+
+    if removed:
+        affected = sorted(
+            m.name
+            for m in problem.meal_library
+            if any(i in removed for i in m.ingredients)
+        )
+        if affected:
+            st.warning(
+                "Removed ingredient(s) were also stripped from these meals: "
+                + ", ".join(affected)
+            )
+
+    _persist_problem(
+        new_problem, config_path, f"Saved {len(ingredients)} ingredients"
+    )
+
+
+_TAG_CUSTOM = "➕ custom tag…"
+_MEAL_NEW = "➕ New meal…"
+
+
+def _render_meals_page(problem: Problem, config_path: str) -> None:
+    """Meal builder: compose a tagged meal from saved ingredients."""
+    st.title("📖 Meal builder")
+
+    if not problem.ingredients:
+        st.info("Add some ingredients on the 🥕 **Ingredients** page first.")
+        return
+
+    st.caption(
+        "Build a meal from your saved ingredients. Pick a tag (which slot it "
+        "fits), choose ingredients, and optionally set a typical amount "
+        "(*anchor*), mark *main* items, or set hard min/max grams. Saved to "
+        f"`{config_path}`."
+    )
+
+    meal_names = [m.name for m in problem.meal_library]
+    choice = st.selectbox(
+        "Edit an existing meal, or create a new one",
+        options=[_MEAL_NEW] + meal_names,
+        key="meal_select",
+    )
+    meal = None if choice == _MEAL_NEW else problem.meal_by_name(choice)
+    _render_meal_form(problem, config_path, meal)
+
+
+def _render_meal_form(
+    problem: Problem, config_path: str, meal: LibraryMeal | None
+) -> None:
+    is_edit = meal is not None
+    fkey = meal.name if is_edit else "__new__"
+    ing_names = sorted(i.name for i in problem.ingredients)
+    macro_opts = all_macro_keys(problem)
+    known_tags = sorted({m.tag for m in problem.meal_library} | set(problem.tag_constraints))
+
+    name = st.text_input(
+        "Meal name", value=(meal.name if is_edit else ""), key=f"meal_name_{fkey}"
+    )
+
+    tag_options = known_tags + [_TAG_CUSTOM]
+    default_idx = (
+        tag_options.index(meal.tag) if is_edit and meal.tag in tag_options else 0
+    )
+    tag_choice = st.selectbox(
+        "Tag (which slot this meal fits)",
+        options=tag_options,
+        index=default_idx,
+        key=f"meal_tag_{fkey}",
+        help="Tag-level constraints (e.g. snack kcal cap) apply by this tag.",
+    )
+    if tag_choice == _TAG_CUSTOM:
+        tag = st.text_input("New tag name", key=f"meal_tag_custom_{fkey}").strip()
+    else:
+        tag = tag_choice
+
+    st.markdown("**Ingredients**")
+    ing_rows: list[dict[str, object]] = []
+    if is_edit:
+        for ing in meal.ingredients:
+            spec = meal.ingredient_specs.get(ing)
+            ing_rows.append(
+                {
+                    "ingredient": ing,
+                    "role": "main" if (spec and spec.main) else "aux",
+                    "anchor (g)": float(spec.anchor) if spec and spec.anchor is not None else None,
+                    "min (g)": float(spec.min) if spec and spec.min is not None else None,
+                    "max (g)": float(spec.max) if spec and spec.max is not None else None,
+                }
+            )
+    ing_df = pd.DataFrame(
+        ing_rows, columns=["ingredient", "role", "anchor (g)", "min (g)", "max (g)"]
+    )
+    ing_edited = st.data_editor(
+        ing_df,
+        column_config={
+            "ingredient": st.column_config.SelectboxColumn(
+                "ingredient", options=ing_names, required=True
+            ),
+            "role": st.column_config.SelectboxColumn(
+                "role",
+                options=["aux", "main"],
+                help="`main` ingredients get `defaults.main_min` as their floor.",
+            ),
+            "anchor (g)": st.column_config.NumberColumn(
+                "anchor (g)", min_value=0.0,
+                help="Typical recipe amount. A soft pull — the optimizer can deviate to hit macros.",
+            ),
+            "min (g)": st.column_config.NumberColumn("min (g)", min_value=0.0),
+            "max (g)": st.column_config.NumberColumn("max (g)", min_value=0.0),
+        },
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        key=f"meal_ings_{fkey}",
+    )
+
+    macro_min, macro_max = _render_meal_macro_limits(meal, macro_opts, fkey)
+
+    c1, c2, _ = st.columns([1, 1, 3])
+    if c1.button("💾 Save meal", type="primary", key=f"save_meal_{fkey}"):
+        _save_meal(
+            problem, config_path, name, tag, ing_edited, macro_min, macro_max,
+            original_name=(meal.name if is_edit else None),
+        )
+    if is_edit and c2.button("🗑 Delete meal", key=f"del_meal_{fkey}"):
+        _persist_problem(
+            delete_meal(problem, meal.name), config_path, f"Deleted '{meal.name}'"
+        )
+
+
+def _render_meal_macro_limits(
+    meal: LibraryMeal | None, macro_opts: list[str], fkey: str
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Optional per-meal macro floors/caps (e.g. kcal max for this slot)."""
+    macro_min: dict[str, float] = {}
+    macro_max: dict[str, float] = {}
+    with st.expander("Advanced: meal-level macro limits (optional)"):
+        st.caption(
+            "Per-slot floors and caps just for this meal. The common one is a "
+            "`kcal` maximum. Leave empty to inherit only the tag's constraints."
+        )
+        min_rows = (
+            [{"macro": k, "min": float(v)} for k, v in meal.macro_min.items()]
+            if meal
+            else []
+        )
+        max_rows = (
+            [{"macro": k, "max": float(v)} for k, v in meal.macro_max.items()]
+            if meal
+            else []
+        )
+        cols = st.columns(2)
+        with cols[0]:
+            st.markdown("Minimums")
+            emin = st.data_editor(
+                pd.DataFrame(min_rows, columns=["macro", "min"]),
+                column_config={
+                    "macro": st.column_config.SelectboxColumn("macro", options=macro_opts),
+                    "min": st.column_config.NumberColumn("min", min_value=0.0),
+                },
+                num_rows="dynamic",
+                hide_index=True,
+                use_container_width=True,
+                key=f"meal_min_{fkey}",
+            )
+        with cols[1]:
+            st.markdown("Maximums")
+            emax = st.data_editor(
+                pd.DataFrame(max_rows, columns=["macro", "max"]),
+                column_config={
+                    "macro": st.column_config.SelectboxColumn("macro", options=macro_opts),
+                    "max": st.column_config.NumberColumn("max", min_value=0.0),
+                },
+                num_rows="dynamic",
+                hide_index=True,
+                use_container_width=True,
+                key=f"meal_max_{fkey}",
+            )
+    for r in emin.to_dict("records"):
+        macro = str(r.get("macro") or "").strip()
+        val = _optnum(r.get("min"))
+        if macro and val is not None:
+            macro_min[macro] = val
+    for r in emax.to_dict("records"):
+        macro = str(r.get("macro") or "").strip()
+        val = _optnum(r.get("max"))
+        if macro and val is not None:
+            macro_max[macro] = val
+    return macro_min, macro_max
+
+
+def _save_meal(
+    problem: Problem,
+    config_path: str,
+    name: str,
+    tag: str,
+    ing_edited: pd.DataFrame,
+    macro_min: dict[str, float],
+    macro_max: dict[str, float],
+    *,
+    original_name: str | None,
+) -> None:
+    specs: dict[str, MealIngredient] = {}
+    for record in ing_edited.to_dict("records"):
+        ing = record.get("ingredient")
+        if not ing or (isinstance(ing, float) and math.isnan(ing)):
+            continue
+        ing = str(ing)
+        if ing in specs:
+            st.error(f"Ingredient '{ing}' is listed twice in this meal.")
+            return
+        specs[ing] = MealIngredient(
+            main=(record.get("role") == "main"),
+            anchor=_optnum(record.get("anchor (g)")),
+            min=_optnum(record.get("min (g)")),
+            max=_optnum(record.get("max (g)")),
+        )
+
+    try:
+        new_problem = upsert_meal(
+            problem, name, tag, specs, macro_min, macro_max,
+            original_name=original_name,
+        )
+    except ValueError as e:
+        st.error(str(e))
+        return
+
+    _persist_problem(new_problem, config_path, f"Saved meal '{name.strip()}'")
+
+
+def _render_tracker_page(problem: Problem, logs_dir: str) -> None:
+    """The original daily food-log tracker + planner."""
     ingredient_map = {i.name: i for i in problem.ingredients}
 
     st.title("Foodtimizer · daily tracker")
@@ -821,6 +1221,32 @@ def main() -> None:
         f"Log file: `{Path(logs_dir) / (sel_date.isoformat() + '.json')}` · "
         "edit by hand if you ever need to — it's just JSON."
     )
+
+
+_PAGE_TRACKER = "🍽️  Tracker"
+_PAGE_INGREDIENTS = "🥕  Ingredients"
+_PAGE_MEALS = "📖  Meals"
+
+
+def main() -> None:
+    st.set_page_config(page_title="Foodtimizer", layout="wide")
+    args = _parse_args()
+
+    problem, config_path, logs_dir = _render_sidebar(args)
+
+    st.sidebar.divider()
+    page = st.sidebar.radio(
+        "Navigate",
+        options=[_PAGE_TRACKER, _PAGE_INGREDIENTS, _PAGE_MEALS],
+        key="nav_page",
+    )
+
+    if page == _PAGE_INGREDIENTS:
+        _render_ingredients_page(problem, config_path)
+    elif page == _PAGE_MEALS:
+        _render_meals_page(problem, config_path)
+    else:
+        _render_tracker_page(problem, logs_dir)
 
 
 # Streamlit's ``streamlit run`` executes the script with ``__name__ ==

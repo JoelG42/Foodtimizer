@@ -169,6 +169,17 @@ meal_library:
       onion: 30
       garlic: 5
       olive_oil: 2
+  beef_wrap:
+    tag: lunch_dinner
+    ingredients:
+      ground_beef: {anchor: 100, main: true, max: 120}
+      tortilla: {anchor: 60, main: true}
+      greek_yogurt: 50
+      feta_cheese: 15
+      bell_pepper: 100
+      onion: 50
+      garlic: 5
+      olive_oil: 2
   yoghurt_snack:
     tag: snack
     ingredients:
@@ -184,17 +195,6 @@ meal_library:
       cacao: 10
       whey_protein: 10
       peanut_butter: 5
-  beef_wrap:
-    tag: lunch_dinner
-    ingredients:
-      ground_beef_16%: {anchor: 100, main: true, max: 120}
-      tortilla: {anchor: 60, main: true}
-      greek_yogurt: 50
-      feta_cheese: 15
-      bell_pepper: 100
-      onion: 50
-      garlic: 5
-      olive_oil: 2
 day:
   breakfast: banana_bread
   lunch: chicken_wrap

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import yaml
 
@@ -409,6 +409,204 @@ def _opt_float(v: Any) -> float | None:
     if v is None:
         return None
     return float(v)
+
+
+# ---------------------------------------------------------------------------
+# Serialization (write a Problem back to YAML)
+# ---------------------------------------------------------------------------
+#
+# The UI lets users build their ingredient database and meals interactively
+# and then persist them. We round-trip a :class:`Problem` back into the same
+# schema ``load_problem`` understands. Ingredient macros are written under
+# ``ingredients`` and any bounds under ``ingredient_bounds`` (the canonical
+# split), so re-loading the saved file reproduces an equivalent Problem.
+
+
+class _FlowMap(dict):
+    """Marker dict serialized in inline (flow) style, e.g. ``{a: 1, b: 2}``.
+
+    Used for ingredient macro maps and per-meal ingredient specs so the
+    saved YAML stays compact and readable, one ingredient per line.
+    """
+
+
+class _ProblemDumper(yaml.SafeDumper):
+    pass
+
+
+def _represent_flow_map(dumper: yaml.Dumper, data: dict) -> Any:
+    return dumper.represent_mapping("tag:yaml.org,2002:map", data, flow_style=True)
+
+
+_ProblemDumper.add_representer(_FlowMap, _represent_flow_map)
+
+
+def _num(v: float | int | None) -> float | int | None:
+    """Render whole-number floats as ints (127.0 -> 127) for tidy YAML."""
+    if v is None:
+        return None
+    f = float(v)
+    return int(f) if f.is_integer() else f
+
+
+def _macros_dict(macros: Mapping[str, float]) -> _FlowMap:
+    return _FlowMap((k, _num(v)) for k, v in macros.items())
+
+
+def _bound_dict(bound: IngredientBound) -> _FlowMap:
+    spec: dict[str, Any] = {}
+    for key in ("total_min", "total_max", "per_meal_min", "per_meal_max", "step"):
+        val = getattr(bound, key)
+        if val is not None:
+            spec[key] = _num(val)
+    return _FlowMap(spec)
+
+
+def _meal_ingredient_repr(spec: MealIngredient | None) -> Any:
+    """Pick the most compact representation for a per-meal ingredient spec.
+
+    - no spec / empty            -> ``None`` (defaults)
+    - only an anchor             -> the bare number
+    - only ``main`` flag         -> the string ``"main"``
+    - anything richer            -> a flow mapping of the set fields
+    """
+    if spec is None:
+        return None
+    has_min = spec.min is not None
+    has_max = spec.max is not None
+    has_anchor = spec.anchor is not None
+    if not has_min and not has_max and not spec.main and not has_anchor:
+        return None
+    if has_anchor and not has_min and not has_max and not spec.main:
+        return _num(spec.anchor)
+    if spec.main and not has_min and not has_max and not has_anchor:
+        return "main"
+    out: dict[str, Any] = {}
+    if has_anchor:
+        out["anchor"] = _num(spec.anchor)
+    if spec.main:
+        out["main"] = True
+    if has_min:
+        out["min"] = _num(spec.min)
+    if has_max:
+        out["max"] = _num(spec.max)
+    return _FlowMap(out)
+
+
+def problem_to_dict(problem: Problem) -> dict[str, Any]:
+    """Serialize a :class:`Problem` into a plain dict matching the YAML schema.
+
+    The result is JSON/YAML-friendly and, when fed back through
+    :func:`load_problem` (after dumping), reproduces an equivalent Problem.
+    """
+    data: dict[str, Any] = {}
+
+    d = problem.defaults
+    defaults: dict[str, Any] = {}
+    for key in ("per_meal_min", "per_meal_max", "main_min", "anchor_weight"):
+        val = getattr(d, key)
+        if val is not None:
+            defaults[key] = _num(val)
+    if defaults:
+        data["defaults"] = defaults
+
+    data["ingredients"] = {
+        ing.name: _macros_dict(ing.macros) for ing in problem.ingredients
+    }
+
+    bounds_out: dict[str, Any] = {}
+    for name, bound in problem.bounds.items():
+        spec = _bound_dict(bound)
+        if spec:
+            bounds_out[name] = spec
+    if bounds_out:
+        data["ingredient_bounds"] = bounds_out
+
+    targets: dict[str, Any] = {}
+    for tgt in problem.targets:
+        spec: dict[str, Any] = {}
+        if tgt.value is not None:
+            spec["value"] = _num(tgt.value)
+        if tgt.weight != 1.0:
+            spec["weight"] = _num(tgt.weight)
+        if tgt.hard:
+            spec["hard"] = True
+        if tgt.lower is not None:
+            spec["lower"] = _num(tgt.lower)
+        if tgt.upper is not None:
+            spec["upper"] = _num(tgt.upper)
+        targets[tgt.name] = _FlowMap(spec) if spec else _FlowMap({})
+    data["targets"] = targets
+
+    tag_out: dict[str, Any] = {}
+    for tag, tc in problem.tag_constraints.items():
+        spec = {}
+        if tc.macro_min:
+            spec["macro_min"] = _FlowMap((k, _num(v)) for k, v in tc.macro_min.items())
+        if tc.macro_max:
+            spec["macro_max"] = _FlowMap((k, _num(v)) for k, v in tc.macro_max.items())
+        if spec:
+            tag_out[tag] = spec
+    if tag_out:
+        data["tag_constraints"] = tag_out
+
+    meals_out: dict[str, Any] = {}
+    for meal in problem.meal_library:
+        spec = {"tag": meal.tag}
+        ing_map: dict[str, Any] = {}
+        for ing_name in meal.ingredients:
+            ing_map[ing_name] = _meal_ingredient_repr(meal.ingredient_specs.get(ing_name))
+        spec["ingredients"] = ing_map
+        if meal.macro_min:
+            spec["macro_min"] = _FlowMap((k, _num(v)) for k, v in meal.macro_min.items())
+        if meal.macro_max:
+            spec["macro_max"] = _FlowMap((k, _num(v)) for k, v in meal.macro_max.items())
+        meals_out[meal.name] = spec
+    data["meal_library"] = meals_out
+
+    if problem.default_day:
+        data["day"] = dict(problem.default_day)
+
+    return data
+
+
+def dump_problem(problem: Problem) -> str:
+    """Return the YAML text for ``problem`` (validates by re-parsing)."""
+    data = problem_to_dict(problem)
+    text = yaml.dump(
+        data,
+        Dumper=_ProblemDumper,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+    )
+    # Fail fast if we produced something we can't read back.
+    _problem_from_dict(yaml.safe_load(text))
+    return text
+
+
+def save_problem(problem: Problem, path: str | Path, *, backup: bool = True) -> Path:
+    """Persist ``problem`` to ``path`` as YAML, atomically.
+
+    The first time we overwrite an existing file we keep a timestamped
+    ``.bak`` copy next to it so a hand-curated config is never lost.
+    """
+    target = Path(path)
+    text = dump_problem(problem)
+
+    if backup and target.exists():
+        from datetime import datetime as _dt
+
+        stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+        bak = target.with_name(f"{target.name}.{stamp}.bak")
+        if not bak.exists():
+            bak.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(target)
+    return target
 
 
 def _validate(
