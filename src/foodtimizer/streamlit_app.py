@@ -30,6 +30,7 @@ from foodtimizer.editor import (
     all_macro_keys,
     delete_ingredient,
     delete_meal,
+    upsert_ingredient,
     upsert_meal,
 )
 from foodtimizer.model import (
@@ -105,6 +106,11 @@ def _render_sidebar(args: argparse.Namespace) -> tuple[Problem, str, str]:
     interact with another widget.
     """
     st.sidebar.header("Settings")
+    st.sidebar.toggle(
+        "Wide layout (desktop)",
+        key="wide_layout",
+        help="Off = phone-friendly centered layout. On = full-width desktop layout.",
+    )
     config_path = st.sidebar.text_input(
         "Config path",
         value=st.session_state.get("config_path", args.config),
@@ -152,45 +158,118 @@ def _render_sidebar(args: argparse.Namespace) -> tuple[Problem, str, str]:
     return problem, config_path, logs_dir
 
 
-def _render_add_form(problem: Problem, logs_dir: str, log: DayLog) -> None:
-    """Render the 'Add an entry' row. On submit, persist + rerun."""
-    ing_names = sorted({i.name for i in problem.ingredients})
+# ---------------------------------------------------------------------------
+# Arise-inspired dashboard: a calorie ring + macro bars as the hero element.
+# ---------------------------------------------------------------------------
 
-    with st.form("add_entry", clear_on_submit=True):
-        c_name, c_grams, c_slot, c_btn = st.columns([4, 2, 2, 1])
-        ingredient = c_name.selectbox(
-            "Ingredient",
-            options=ing_names,
-            index=0 if ing_names else None,
-            placeholder="Pick an ingredient",
+_COLOR_HEX: dict[str, str] = {
+    "green": "#3ddc97",
+    "orange": "#f5a623",
+    "red": "#ff5a5f",
+    "blue": "#5b8def",
+}
+
+
+def _hex(color_name: str) -> str:
+    return _COLOR_HEX.get(color_name, _COLOR_HEX["blue"])
+
+
+def _kcal_budget(problem: Problem) -> float | None:
+    """The daily kcal 'budget' for the ring: value, else upper, else lower."""
+    for t in problem.targets:
+        if t.name == "kcal":
+            if t.value is not None:
+                return t.value
+            if t.upper is not None:
+                return t.upper
+            return t.lower
+    return None
+
+
+def _calorie_ring_html(eaten: float, budget: float | None, hole: str) -> str:
+    """A CSS conic-gradient donut ring.
+
+    ``hole`` is the colour painted in the centre cut-out — pass the app's
+    background colour so the ring reads as a hollow donut. Built from plain
+    ``div``s + inline styles, which Streamlit's HTML sanitizer renders
+    reliably (unlike inline ``<svg>``).
+    """
+    if budget and budget > 0:
+        pct = max(0.0, min(eaten / budget, 1.0))
+        remaining = budget - eaten
+        color = _COLOR_HEX["green"] if eaten <= budget else _COLOR_HEX["red"]
+        center_sub = f"of {budget:.0f} kcal"
+        foot = (
+            f"{remaining:.0f} kcal left"
+            if remaining >= 0
+            else f"{-remaining:.0f} kcal over"
         )
-        grams = c_grams.number_input("Grams", min_value=0.0, step=10.0, value=0.0)
-        slot = c_slot.selectbox(
-            "Meal (optional)",
-            options=("",) + _DEFAULT_SLOTS,
-            index=0,
-            help="Tag this entry with a meal slot for grouping. Leave blank to skip.",
-        )
-        submit = c_btn.form_submit_button("➕ Add", use_container_width=True)
+    else:
+        pct, color = 0.0, _COLOR_HEX["blue"]
+        center_sub, foot = "kcal eaten", "no kcal target set"
+    deg = pct * 360.0
+    track = "rgba(255,255,255,0.12)"
+    return f"""
+<div style="display:flex;justify-content:center;margin:0.25rem 0 0.6rem;">
+  <div style="width:200px;height:200px;border-radius:50%;
+              background:conic-gradient({color} {deg:.1f}deg, {track} {deg:.1f}deg 360deg);
+              display:flex;align-items:center;justify-content:center;">
+    <div style="width:158px;height:158px;border-radius:50%;background:{hole};
+                display:flex;flex-direction:column;align-items:center;
+                justify-content:center;text-align:center;">
+      <div style="font-size:2.5rem;font-weight:800;line-height:1;">{eaten:.0f}</div>
+      <div style="font-size:0.8rem;opacity:0.6;margin-top:3px;">{center_sub}</div>
+      <div style="font-size:0.8rem;color:{color};font-weight:600;margin-top:5px;">{foot}</div>
+    </div>
+  </div>
+</div>
+"""
 
-    if not submit:
-        return
-    if not ingredient:
-        st.warning("Pick an ingredient first.")
-        return
-    if grams <= 0:
-        st.warning("Grams must be greater than zero.")
-        return
 
-    entry = make_entry(
-        ingredient=ingredient,
-        grams=float(grams),
-        slot=(slot or None),
+def _macro_bar_html(name: str, val: float, goal: float | None, color: str) -> str:
+    if goal and goal > 0:
+        width = max(0.0, min(val / goal, 1.0)) * 100
+        figure = f"{val:.0f} / {goal:.0f} g"
+    else:
+        width, figure = 0.0, f"{val:.0f} g"
+    return f"""
+<div style="text-align:center;padding:0 3px;">
+  <div style="font-size:0.76rem;opacity:0.65;text-transform:capitalize;">{name}</div>
+  <div style="font-weight:700;font-size:0.92rem;">{figure}</div>
+  <div style="height:7px;border-radius:4px;background:rgba(255,255,255,0.12);
+              margin-top:5px;overflow:hidden;">
+    <div style="height:7px;width:{width:.0f}%;border-radius:4px;
+                background:{color};"></div>
+  </div>
+</div>
+"""
+
+
+def _render_dashboard(problem: Problem, totals: dict[str, float]) -> None:
+    """Calorie ring (kcal vs budget) + a row of macro progress bars."""
+    eaten = totals.get("kcal", 0.0)
+    # Paint the ring's centre with the app background so it reads as a donut.
+    try:
+        hole = st.get_option("theme.backgroundColor") or "#0e1117"
+    except Exception:  # noqa: BLE001 - get_option is defensive only
+        hole = "#0e1117"
+    st.markdown(
+        _calorie_ring_html(eaten, _kcal_budget(problem), hole),
+        unsafe_allow_html=True,
     )
-    save_day_log(logs_dir, log.with_added(entry))
-    st.toast(f"Added {grams:g} g {ingredient}", icon="✅")
-    # Rerun so the new entry shows up everywhere.
-    st.rerun()
+
+    macro_targets = [t for t in problem.targets if t.name != "kcal"]
+    if not macro_targets:
+        return
+    cols = st.columns(len(macro_targets))
+    for col, tgt in zip(cols, macro_targets):
+        goal = _target_value(tgt)
+        val = totals.get(tgt.name, 0.0)
+        lower_only = tgt.value is None and tgt.lower is not None
+        color = _hex(_macro_color(val / goal, lower_only)) if goal else _hex("blue")
+        col.markdown(
+            _macro_bar_html(tgt.name, val, goal, color), unsafe_allow_html=True
+        )
 
 
 # Short, friendly column headers for the most common macros. Anything not
@@ -266,110 +345,180 @@ def _group_entries_by_slot(
     return ordered
 
 
-def _render_slot_headline(
-    slot_label: str,
+def _entry_time(entry: LogEntry) -> str:
+    """``hh:mm`` from an entry's ISO timestamp, or an em dash if missing."""
+    if not entry.eaten_at:
+        return "—"
+    try:
+        return datetime.fromisoformat(entry.eaten_at).strftime("%H:%M")
+    except ValueError:
+        return entry.eaten_at[:16]
+
+
+def _macro_summary(
+    macros: list[str], values: dict[str, float] | Ingredient | None, grams: float = 0.0
+) -> str:
+    """One-line ``kcal 520 · P 30 · C 60`` style macro summary."""
+    parts: list[str] = []
+    for m in macros:
+        if isinstance(values, dict):
+            num = f"{values.get(m, 0.0):.0f}"
+        else:
+            num = _format_macro_value(grams, values, m)
+        parts.append(f"{_macro_header(m)} {num}")
+    return "  ·  ".join(parts)
+
+
+# Arise-style fixed meal slots with friendly labels. Each is rendered as a
+# card with its logged items and an inline "add food" logger.
+_MEAL_SLOTS: tuple[tuple[str, str], ...] = (
+    ("breakfast", "🌅 Breakfast"),
+    ("lunch", "🥗 Lunch"),
+    ("dinner", "🍽️ Dinner"),
+    ("snack", "🍎 Snack"),
+)
+
+
+def _render_entry_row(
+    orig_idx: int,
+    entry: LogEntry,
+    ing: Ingredient | None,
+    macros: list[str],
+    log: DayLog,
+    logs_dir: str,
+) -> None:
+    """One logged item: description + macro caption + delete button."""
+    c_main, c_del = st.columns([6, 1])
+    c_main.markdown(f"**{entry.grams:.0f} g · {entry.ingredient}**")
+    c_main.caption(
+        f"🕐 {_entry_time(entry)}  ·  " + _macro_summary(macros, ing, entry.grams)
+    )
+    # Key off the *original* index so deletes work after grouping.
+    if c_del.button("🗑", key=f"del_{orig_idx}", help="Delete entry"):
+        save_day_log(logs_dir, log.with_removed(orig_idx))
+        st.rerun()
+
+
+def _render_slot_add_form(
+    slot: str, log: DayLog, logs_dir: str, ing_names: list[str]
+) -> None:
+    """Arise-style 'tap a meal, then add food' inline logger for one slot."""
+    with st.form(f"add_{slot}", clear_on_submit=True):
+        ingredient = st.selectbox(
+            "Food",
+            options=ing_names,
+            index=None,
+            placeholder="Search your ingredients…",
+            key=f"food_{slot}",
+            label_visibility="collapsed",
+        )
+        c_g, c_btn = st.columns([2, 1])
+        grams = c_g.number_input(
+            "Grams",
+            min_value=0,
+            step=1,
+            value=None,
+            placeholder="grams",
+            key=f"grams_{slot}",
+            label_visibility="collapsed",
+        )
+        submit = c_btn.form_submit_button(
+            "Add", use_container_width=True, type="primary"
+        )
+    if not submit:
+        return
+    if not ingredient:
+        st.warning("Pick a food first.")
+        return
+    if not grams or grams <= 0:
+        st.warning("Enter grams.")
+        return
+    save_day_log(
+        logs_dir,
+        log.with_added(
+            make_entry(ingredient=ingredient, grams=float(grams), slot=slot)
+        ),
+    )
+    st.toast(f"Added {grams:g} g {ingredient}", icon="✅")
+    st.rerun()
+
+
+def _render_meal_card(
+    slot: str,
+    label: str,
     indexed_entries: list[tuple[int, LogEntry]],
+    log: DayLog,
+    logs_dir: str,
     ingredient_map: dict[str, Ingredient],
     macros: list[str],
-    weights: list[int],
+    ing_names: list[str],
+    *,
+    allow_add: bool = True,
 ) -> None:
-    """Render the per-slot totals row, aligned to the column layout so
-    each macro total sits directly under its column header.
-
-    Total grams goes in the ``Grams`` column; per-macro totals fill the
-    macro columns. ``Time``, ``Slot`` and the delete column are left
-    blank — the slot name is rendered as a subheader above.
-    """
-    total_grams = sum(e.grams for _, e in indexed_entries)
-    totals: dict[str, float] = {m: 0.0 for m in macros}
+    """A single meal card: header with kcal, logged items, and add-food."""
+    slot_kcal = 0.0
     for _, e in indexed_entries:
         ing = ingredient_map.get(e.ingredient)
-        if ing is None:
-            # Unknown ingredient contributes 0 to macros but its grams
-            # still count, so the user sees it in the row breakdown.
-            continue
-        for m in macros:
-            totals[m] += e.grams * ing.amount_for(m) / 100.0
+        if ing is not None:
+            slot_kcal += e.grams * ing.amount_for("kcal") / 100.0
 
-    n = len(indexed_entries)
-    st.markdown(f"##### {slot_label} · {n} item{'' if n == 1 else 's'}")
+    with st.container(border=True):
+        h_label, h_kcal = st.columns([3, 1])
+        h_label.markdown(f"#### {label}")
+        h_kcal.markdown(
+            f"<div style='text-align:right;font-weight:700;opacity:0.75;"
+            f"padding-top:0.55rem;'>{slot_kcal:.0f} kcal</div>",
+            unsafe_allow_html=True,
+        )
 
-    cols = st.columns(weights)
-    cols[1].markdown("**Total**")
-    cols[3].markdown(f"**{total_grams:.0f} g**")
-    for j, m in enumerate(macros):
-        val = totals[m]
-        # kcal is whole-number; macro grams keep one decimal so the
-        # totals look consistent with `_format_macro_value` per row.
-        formatted = f"{val:.0f}" if m == "kcal" else f"{val:.1f}"
-        cols[4 + j].markdown(f"**{formatted}**")
+        if not indexed_entries:
+            st.caption("Nothing logged yet.")
+        for orig_idx, entry in indexed_entries:
+            _render_entry_row(
+                orig_idx,
+                entry,
+                ingredient_map.get(entry.ingredient),
+                macros,
+                log,
+                logs_dir,
+            )
+
+        if allow_add:
+            with st.expander("➕ Add food"):
+                _render_slot_add_form(slot, log, logs_dir, ing_names)
 
 
-def _render_entries(
+def _render_meal_slots(
     log: DayLog,
     logs_dir: str,
     ingredient_map: dict[str, Ingredient],
     macros: list[str],
 ) -> None:
-    """Render the day's entries grouped by slot, each group prefixed with
-    a totals headline.
-
-    Macro columns are taken from ``macros`` (typically every targeted
-    macro), so adding ``fat`` / ``fibre`` to the config makes them show
-    up here automatically.
-    """
-    st.subheader(
-        f"Today's log · {len(log.entries)} "
-        f"entr{'y' if len(log.entries) == 1 else 'ies'}"
-    )
-
-    if not log.entries:
-        st.info("Nothing logged yet for this day. Add your first entry above.")
-        return
-
-    # Column weights: [time, ingredient, slot, grams, <one per macro>, delete].
-    # The ingredient column stays wide; macros get equal narrow shares.
-    base_weights = [2, 4, 2, 2]
-    macro_weights = [2] * len(macros)
-    weights = base_weights + macro_weights + [1]
-
-    base_labels = ["Time", "Ingredient", "Slot", "Grams"]
-    macro_labels = [_macro_header(m) for m in macros]
-    labels = base_labels + macro_labels + [""]
-
-    hdr = st.columns(weights)
-    for c, label in zip(hdr, labels):
-        c.markdown(f"**{label}**")
-
-    for slot_label, indexed_entries in _group_entries_by_slot(log.entries):
-        _render_slot_headline(
-            slot_label, indexed_entries, ingredient_map, macros, weights
+    """Render the day as Arise-style meal cards, each with inline add-food."""
+    grouped: dict[str, list[tuple[int, LogEntry]]] = {}
+    for idx, entry in enumerate(log.entries):
+        grouped.setdefault(entry.slot or _UNASSIGNED_SLOT_LABEL, []).append(
+            (idx, entry)
         )
 
-        for orig_idx, entry in indexed_entries:
-            cols = st.columns(weights)
-            # Time: just hh:mm if we have an ISO timestamp
-            if entry.eaten_at:
-                try:
-                    t = datetime.fromisoformat(entry.eaten_at).strftime("%H:%M")
-                except ValueError:
-                    t = entry.eaten_at[:16]
-            else:
-                t = "—"
-            cols[0].write(t)
-            cols[1].write(entry.ingredient)
-            cols[2].write(entry.slot or "")
-            cols[3].write(f"{entry.grams:.0f} g")
+    ing_names = sorted(ingredient_map)
 
-            ing = ingredient_map.get(entry.ingredient)
-            for j, macro in enumerate(macros):
-                cols[4 + j].write(_format_macro_value(entry.grams, ing, macro))
+    for slot, label in _MEAL_SLOTS:
+        _render_meal_card(
+            slot, label, grouped.get(slot, []), log, logs_dir,
+            ingredient_map, macros, ing_names,
+        )
 
-            # Key off the *original* index so deletes work after grouping.
-            if cols[-1].button("🗑", key=f"del_{orig_idx}", help="Delete entry"):
-                new_log = log.with_removed(orig_idx)
-                save_day_log(logs_dir, new_log)
-                st.rerun()
+    # Any non-standard slots (e.g. "pre_workout") or unassigned legacy
+    # entries still get a card so nothing is ever hidden.
+    standard = {s for s, _ in _MEAL_SLOTS}
+    for slot in sorted(s for s in grouped if s not in standard):
+        is_unassigned = slot == _UNASSIGNED_SLOT_LABEL
+        label = "🍴 Other" if is_unassigned else f"🍴 {slot}"
+        _render_meal_card(
+            slot, label, grouped[slot], log, logs_dir,
+            ingredient_map, macros, ing_names, allow_add=not is_unassigned,
+        )
 
 
 def _render_totals(problem: Problem, totals: dict[str, float]) -> None:
@@ -384,20 +533,19 @@ def _render_totals(problem: Problem, totals: dict[str, float]) -> None:
         val = totals.get(tgt.name, 0.0)
         lower_only = tgt.value is None and tgt.lower is not None
 
-        cols = st.columns([2, 3, 5])
-        cols[0].markdown(f"**{tgt.name}**")
         if goal and goal > 0:
             pct = val / goal
             arrow = "≥" if lower_only else "/"
             colour = _macro_color(pct, lower_only)
-            # Streamlit's :color[...] markdown extension; no HTML mixed in.
-            cols[1].markdown(
+            # Label + value on one line, the bar full-width underneath, so it
+            # reads cleanly on a phone instead of three squished columns.
+            st.markdown(
+                f"**{tgt.name}**  ·  "
                 f":{colour}[**{val:.0f}** {arrow} {goal:.0f} g]  ·  {pct*100:.0f}%"
             )
-            cols[2].progress(min(pct, 1.0))
+            st.progress(min(pct, 1.0))
         else:
-            cols[1].write(f"{val:.1f}")
-            cols[2].write("—")
+            st.markdown(f"**{tgt.name}**  ·  {val:.1f}")
 
     if other_macros:
         with st.expander("Other macros (no target set)"):
@@ -776,23 +924,26 @@ def _render_date_picker() -> date:
     if "sel_date" not in st.session_state:
         st.session_state["sel_date"] = date.today()
 
-    cols = st.columns([1, 3, 1, 1])
-    if cols[0].button("← prev"):
+    picked = st.date_input(
+        "Date", value=st.session_state["sel_date"], label_visibility="collapsed"
+    )
+    if picked != st.session_state["sel_date"]:
+        st.session_state["sel_date"] = picked
+        st.rerun()
+
+    c_prev, c_today, c_next = st.columns(3)
+    if c_prev.button("‹ Prev", use_container_width=True):
         st.session_state["sel_date"] = date.fromordinal(
             st.session_state["sel_date"].toordinal() - 1
         )
         st.rerun()
-    picked = cols[1].date_input("Date", value=st.session_state["sel_date"], label_visibility="collapsed")
-    if picked != st.session_state["sel_date"]:
-        st.session_state["sel_date"] = picked
+    if c_today.button("Today", use_container_width=True):
+        st.session_state["sel_date"] = date.today()
         st.rerun()
-    if cols[2].button("next →"):
+    if c_next.button("Next ›", use_container_width=True):
         st.session_state["sel_date"] = date.fromordinal(
             st.session_state["sel_date"].toordinal() + 1
         )
-        st.rerun()
-    if cols[3].button("today"):
-        st.session_state["sel_date"] = date.today()
         st.rerun()
     return st.session_state["sel_date"]
 
@@ -843,18 +994,116 @@ _BOUND_HELP: dict[str, str] = {
 def _render_ingredients_page(problem: Problem, config_path: str) -> None:
     """Editable ingredient database: macros per 100 g + optional bounds."""
     st.title("🥕 Ingredient database")
+    st.caption(f"Your saved ingredients (macros per 100 g). Saved to `{config_path}`.")
+
+    _render_quick_ingredient_form(problem, config_path)
+
+    if problem.ingredients:
+        st.caption(f"{len(problem.ingredients)} ingredients saved.")
+
+    with st.expander("📋 Edit the full table (more columns; best on desktop)"):
+        _render_ingredient_table(problem, config_path)
+
+
+def _render_quick_ingredient_form(problem: Problem, config_path: str) -> None:
+    """Compact, vertically-stacked form to add or update one ingredient.
+
+    This is the primary path on mobile — the full spreadsheet editor is
+    tucked into an expander below for power editing on a larger screen.
+    """
+    names = sorted(i.name for i in problem.ingredients)
+    _NEW = "➕ New ingredient…"
+    with st.container(border=True):
+        target = st.selectbox(
+            "Add new or edit existing",
+            options=[_NEW] + names,
+            key="quick_ing_target",
+        )
+        editing = None if target == _NEW else problem.ingredient_by_name(target)
+        existing_bound = problem.bounds.get(target) if editing else None
+
+        with st.form("quick_ingredient", clear_on_submit=False):
+            name = st.text_input(
+                "Name", value=(editing.name if editing else ""),
+                placeholder="e.g. greek_yogurt",
+            )
+            c1, c2 = st.columns(2)
+            kcal = c1.number_input(
+                "kcal /100g", min_value=0.0, step=10.0,
+                value=float(editing.macros.get("kcal", 0.0)) if editing else 0.0,
+            )
+            protein = c2.number_input(
+                "protein /100g", min_value=0.0, step=1.0,
+                value=float(editing.macros.get("protein", 0.0)) if editing else 0.0,
+            )
+            c3, c4 = st.columns(2)
+            carbs = c3.number_input(
+                "carbs /100g", min_value=0.0, step=1.0,
+                value=float(editing.macros.get("carbs", 0.0)) if editing else 0.0,
+            )
+            fat = c4.number_input(
+                "fat /100g", min_value=0.0, step=1.0,
+                value=float(editing.macros.get("fat", 0.0)) if editing else 0.0,
+            )
+            c5, c6 = st.columns(2)
+            fibre = c5.number_input(
+                "fibre /100g", min_value=0.0, step=0.5,
+                value=float(editing.macros.get("fibre", 0.0)) if editing else 0.0,
+            )
+            per_meal_max = c6.number_input(
+                "max per meal (g, 0 = none)", min_value=0.0, step=10.0,
+                value=float(existing_bound.per_meal_max)
+                if existing_bound and existing_bound.per_meal_max is not None
+                else 0.0,
+                help="Optional cap on how much of this can go in a single meal.",
+            )
+            save = st.form_submit_button(
+                "💾 Save ingredient", use_container_width=True, type="primary"
+            )
+
+        if save:
+            if not name.strip():
+                st.warning("Enter a name first.")
+                return
+            macros = {
+                "kcal": kcal, "protein": protein,
+                "carbs": carbs, "fat": fat, "fibre": fibre,
+            }
+            bounds: dict[str, float] = {}
+            # Preserve any bound fields the quick form doesn't expose.
+            if existing_bound is not None:
+                for f in INGREDIENT_BOUND_FIELDS:
+                    v = getattr(existing_bound, f)
+                    if v is not None:
+                        bounds[f] = v
+            if per_meal_max > 0:
+                bounds["per_meal_max"] = per_meal_max
+            else:
+                bounds.pop("per_meal_max", None)
+            try:
+                new_problem = upsert_ingredient(
+                    problem, name, macros, bounds,
+                    original_name=(editing.name if editing else None),
+                )
+            except ValueError as e:
+                st.error(str(e))
+                return
+            _persist_problem(new_problem, config_path, f"Saved {name.strip()}")
+
+
+def _render_ingredient_table(problem: Problem, config_path: str) -> None:
+    """The full editable spreadsheet of ingredients (macros + all bounds)."""
     st.caption(
-        "Each ingredient's macros are per 100 g. Add rows at the bottom, edit "
-        "any cell, then **Save**. The bound columns on the right are optional "
-        "real-life limits the optimizer respects. Saved to "
-        f"`{config_path}`."
+        "Add rows at the bottom, edit any cell, then Save. The bound columns "
+        "on the right are optional real-life limits the optimizer respects."
     )
 
     macro_keys = all_macro_keys(problem)
     extra = [m for m in st.session_state.get("extra_macros", []) if m not in macro_keys]
     macro_keys = macro_keys + extra
 
-    with st.expander("➕ Add a new nutrient column (e.g. sodium, sugar)"):
+    with st.container():
+        st.markdown("**Add a new nutrient column** (e.g. sodium, sugar)")
         cols = st.columns([4, 1])
         new_macro = cols[0].text_input(
             "Nutrient name", key="new_macro_name", label_visibility="collapsed",
@@ -1183,13 +1432,13 @@ def _save_meal(
 
 
 def _render_tracker_page(problem: Problem, logs_dir: str) -> None:
-    """The original daily food-log tracker + planner."""
+    """Arise-inspired daily tracker: calorie ring, macro bars, meal cards."""
     ingredient_map = {i.name: i for i in problem.ingredients}
+    macros = _displayed_macros(problem)
 
-    st.title("Foodtimizer · daily tracker")
+    st.title("🍽️ Foodtimizer")
 
     sel_date = _render_date_picker()
-
     log = load_day_log(logs_dir, sel_date)
 
     # Warn about stale entries referencing ingredients no longer in the config.
@@ -1200,14 +1449,16 @@ def _render_tracker_page(problem: Problem, logs_dir: str) -> None:
             "and are excluded from totals: " + ", ".join(stale)
         )
 
-    _render_add_form(problem, logs_dir, log)
-
     totals = compute_totals(log, ingredient_map)
-    _render_totals(problem, totals)
+    _render_dashboard(problem, totals)
 
-    _render_entries(log, logs_dir, ingredient_map, _displayed_macros(problem))
+    st.markdown("### Meals")
+    _render_meal_slots(log, logs_dir, ingredient_map, macros)
 
-    with st.expander("🧮 Plan the rest of the day", expanded=False):
+    with st.expander("📊 Detailed totals vs targets"):
+        _render_totals(problem, totals)
+
+    with st.expander("🧮 Plan the rest of the day"):
         st.caption(
             "Given what you've already logged today, the optimizer picks "
             "ingredient amounts for the remaining slots so that the *whole "
@@ -1223,22 +1474,64 @@ def _render_tracker_page(problem: Problem, logs_dir: str) -> None:
     )
 
 
-_PAGE_TRACKER = "🍽️  Tracker"
-_PAGE_INGREDIENTS = "🥕  Ingredients"
-_PAGE_MEALS = "📖  Meals"
+_PAGE_TRACKER = "🍽️ Tracker"
+_PAGE_INGREDIENTS = "🥕 Ingredients"
+_PAGE_MEALS = "📖 Meals"
+
+
+def _inject_mobile_css() -> None:
+    """Tighten paddings/spacing so the app feels native on a phone screen.
+
+    Streamlit's default desktop chrome wastes a lot of horizontal margin and
+    vertical gap; on a narrow viewport that pushes content around. These rules
+    are deliberately conservative (paddings + a couple of spacing tweaks) so
+    they degrade gracefully if Streamlit's internal markup changes.
+    """
+    st.markdown(
+        """
+        <style>
+          .block-container {
+              padding-top: 2.2rem;
+              padding-bottom: 4rem;
+              padding-left: 0.9rem;
+              padding-right: 0.9rem;
+          }
+          /* Make the top nav radio read like a segmented toolbar. */
+          div[role="radiogroup"] { gap: 0.35rem; flex-wrap: wrap; }
+          /* Buttons inside columns fill their cell for easy thumb taps. */
+          .stButton > button { width: 100%; }
+          /* Trim the big default gap between stacked blocks a touch. */
+          div[data-testid="stVerticalBlock"] { gap: 0.55rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def main() -> None:
-    st.set_page_config(page_title="Foodtimizer", layout="wide")
+    # Default to the phone-friendly centered layout; a sidebar toggle lets
+    # desktop users opt into the wide layout. set_page_config must run first,
+    # so we read the persisted preference straight from session_state.
+    layout = "wide" if st.session_state.get("wide_layout", False) else "centered"
+    st.set_page_config(
+        page_title="Foodtimizer",
+        page_icon="🍽️",
+        layout=layout,
+        initial_sidebar_state="collapsed",
+    )
+    _inject_mobile_css()
     args = _parse_args()
 
     problem, config_path, logs_dir = _render_sidebar(args)
 
-    st.sidebar.divider()
-    page = st.sidebar.radio(
+    # Top navigation lives in the main column so it's one tap on mobile
+    # (the sidebar is collapsed behind the hamburger on small screens).
+    page = st.radio(
         "Navigate",
         options=[_PAGE_TRACKER, _PAGE_INGREDIENTS, _PAGE_MEALS],
         key="nav_page",
+        horizontal=True,
+        label_visibility="collapsed",
     )
 
     if page == _PAGE_INGREDIENTS:

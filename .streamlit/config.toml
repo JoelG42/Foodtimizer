@@ -1,0 +1,10 @@
+# Arise-inspired dark theme. Streamlit picks this up automatically when you
+# run from the project directory. Tweak the colours to taste, or switch
+# base = "light" if you prefer a light UI.
+[theme]
+base = "dark"
+primaryColor = "#3ddc97"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#181b23"
+textColor = "#fafafa"
+font = "sans serif"

@@ -6,6 +6,7 @@ defaults:
 ingredients:
   ground_beef: {kcal: 127, protein: 21, carbs: 0, fat: 4.5, fibre: 0}
   ground_beef_16%: {kcal: 220, protein: 19, carbs: 0, fat: 16, fibre: 0}
+  chicken_breast: {kcal: 109, protein: 25, carbs: 0, fat: 1, fibre: 0}
   sushi_salmon: {kcal: 161, protein: 21.4, carbs: 0, fat: 8.4, fibre: 0}
   shrimp: {kcal: 65, protein: 15, carbs: 0, fat: 0.5, fibre: 0}
   whey_protein: {kcal: 387, protein: 70, carbs: 8, fat: 7.4, fibre: 2.4}
@@ -45,10 +46,10 @@ ingredients:
   cacao: {kcal: 368, protein: 20, carbs: 9, fat: 21, fibre: 28}
   black_sesame_seeds: {kcal: 636, protein: 19, carbs: 23, fat: 52, fibre: 13}
   mars ice cream: {kcal: 268, protein: 3, carbs: 32, fat: 14, fibre: 0}
-  chicken_breast: {kcal: 109, protein: 25, carbs: 0, fat: 1, fibre: 0}
 ingredient_bounds:
   ground_beef: {per_meal_max: 200}
   ground_beef_16%: {per_meal_max: 200}
+  chicken_breast: {per_meal_max: 150}
   sushi_salmon: {per_meal_min: 130, per_meal_max: 150, step: 130}
   shrimp: {per_meal_min: 150, per_meal_max: 150}
   whey_protein: {total_max: 60}
@@ -86,7 +87,6 @@ ingredient_bounds:
   cacao: {per_meal_max: 20}
   black_sesame_seeds: {per_meal_min: 15, per_meal_max: 5}
   mars ice cream: {step: 49.5}
-  chicken_breast: {per_meal_max: 150}
 targets:
   kcal: {upper: 1800}
   protein: {value: 130, weight: 25}
