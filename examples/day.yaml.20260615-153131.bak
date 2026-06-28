@@ -46,31 +46,6 @@ ingredients:
   black_sesame_seeds: {kcal: 636, protein: 19, carbs: 23, fat: 52, fibre: 13}
   mars ice cream: {kcal: 268, protein: 3, carbs: 32, fat: 14, fibre: 0}
   chicken_breast: {kcal: 109, protein: 25, carbs: 0, fat: 1, fibre: 0}
-  Creme fraiche: {kcal: 100, protein: 2.3, carbs: 6, fat: 7.4, fibre: 0}
-  Ketchup: {kcal: 40, protein: 1.6, carbs: 5.9, fat: 0.1, fibre: 0}
-  Chicken filet: {kcal: 118, protein: 25, carbs: 0, fat: 2, fibre: 0}
-  Beef 7.7%: {kcal: 149, protein: 20, carbs: 0, fat: 7.7, fibre: 0}
-  Potato wedges: {kcal: 128, protein: 2.2, carbs: 17, fat: 5.2, fibre: 2.1}
-  Shrimps: {kcal: 72, protein: 16, carbs: 0.7, fat: 0.6, fibre: 0}
-  Corn boiled: {kcal: 96, protein: 3.4, carbs: 18, fat: 1.5, fibre: 2.8}
-  Chocolate 70%: {kcal: 566, protein: 9.5, carbs: 34, fat: 41, fibre: 0}
-  Franui dark: {kcal: 374, protein: 4.7, carbs: 31, fat: 25, fibre: 2.7}
-  Beef 5%: {kcal: 127, protein: 20, carbs: 0, fat: 5, fibre: 0}
-  Tortilla whole grain: {kcal: 284, protein: 9.4, carbs: 45, fat: 5.8, fibre: 7.3}
-  Chocolate ice cream selection: {kcal: 273, protein: 3.5, carbs: 21, fat: 19, fibre: 2.1}
-  Hörnli: {kcal: 361, protein: 14, carbs: 68, fat: 2.8, fibre: 0}
-  whey latte macchiato: {kcal: 365, protein: 85, carbs: 5.5, fat: 0.8, fibre: 0}
-  Beef 6%: {kcal: 134, protein: 20, carbs: 0, fat: 6, fibre: 0}
-  Sushi rice: {kcal: 354, protein: 6.7, carbs: 80, fat: 0.5, fibre: 0}
-  Sushi vinegar: {kcal: 145, protein: 0, carbs: 36, fat: 0, fibre: 0}
-  Sushi salmon: {kcal: 189, protein: 20, carbs: 0.5, fat: 12, fibre: 0}
-  Sriracha mayo: {kcal: 281, protein: 0.9, carbs: 26, fat: 19, fibre: 1.2}
-  Tessiner brot: {kcal: 268, protein: 9.9, carbs: 45, fat: 4.7, fibre: 2.9}
-  Couscous salad: {kcal: 139, protein: 3.2, carbs: 19.4, fat: 5.2, fibre: 1.5}
-  Strawberry: {kcal: 32, protein: 0, carbs: 7.6, fat: 0, fibre: 2}
-  Boiled potato: {kcal: 87, protein: 1.9, carbs: 20, fat: 1.8, fibre: 0}
-  flour: {kcal: 353, protein: 12, carbs: 72, fat: 1, fibre: 4}
-  natur yoghurt greek: {kcal: 108, protein: 4.9, carbs: 3.7, fat: 7.5, fibre: 0}
 ingredient_bounds:
   ground_beef: {per_meal_max: 200}
   ground_beef_16%: {per_meal_max: 200}
@@ -112,14 +87,12 @@ ingredient_bounds:
   black_sesame_seeds: {per_meal_min: 15, per_meal_max: 5}
   mars ice cream: {step: 49.5}
   chicken_breast: {per_meal_max: 150}
-recipes:
-  sirinki:
-    components: {flour: 250, natur yoghurt greek: 200, eggs: 55, olive_oil: 25, feta_cheese: 100}
 targets:
   kcal: {upper: 1800}
-  protein: {lower: 100}
+  protein: {value: 130, weight: 25}
   carbs: {value: 180, weight: 25}
   fat: {value: 60, weight: 50}
+  fibre: {lower: 25}
 tag_constraints:
   breakfast:
     macro_max: {kcal: 750}
@@ -132,79 +105,72 @@ meal_library:
   oats_breakfast:
     tag: breakfast
     ingredients:
-      oats: {anchor: 50, main: true}
-      banana: {anchor: 80, main: true}
+      oats: 50
+      banana: 80
       whey_protein: 15
-      milk_3.9%: {anchor: 100, main: true, max: 200}
+      milk_3.9%: {anchor: 100, max: 200}
       cacao: 5
       peanut_butter: 10
   banana_omlettte:
     tag: breakfast
     ingredients:
-      eggs: {anchor: 165, main: true}
-      banana: {anchor: 100, main: true}
+      eggs: 165
+      banana: 100
       peanut_butter: 10
-      milk_3.9%: {anchor: 60, main: true}
-      butter: {anchor: 5, main: true}
+      milk_3.9%: 60
+      butter: 5
   banana_bread:
     tag: breakfast
     ingredients:
-      eggs: {anchor: 110, main: true}
-      banana: {anchor: 100, main: true}
-      whey_protein: {anchor: 15, main: true}
-      cacao: {anchor: 5, main: true}
-      milk_3.9%: {anchor: 30, main: true}
+      eggs: 110
+      banana: 100
+      whey_protein: 15
+      cacao: 5
+      milk_3.9%: 30
       peanut_butter: 10
   greek_salad:
     tag: lunch_dinner
     ingredients:
-      cucumber: {anchor: 130, main: true, min: 130}
-      tomato: {anchor: 300, main: true, min: 150}
-      onion: {anchor: 40, main: true}
-      olive_oil: {anchor: 12, main: true, min: 10}
-      sirrene: {anchor: 70, main: true, min: 40}
-      vinegar: {anchor: 12, main: true}
-      sonnen_brot: {anchor: 50, main: true, min: 50}
+      cucumber: {anchor: 100, min: 150}
+      tomato: {anchor: 100, min: 150}
+      onion: 50
+      olive_oil: {anchor: 10, min: 10}
+      feta_cheese: 50
+      vinegar: 5
+  gnocchi_bolognese:
+    tag: lunch_dinner
+    ingredients:
+      gnocchi: 150
+      ground_beef: {anchor: 100, main: true}
+      tomato_sauce: 100
+      carrots: 80
+      onion: 50
+      olive_oil: 2
+      tomato_paste: 10
+      garlic: 5
+      butter: 5
   pasta_bolognese:
     tag: lunch_dinner
     ingredients:
-      pasta: {anchor: 90, main: true, min: 80}
-      Beef 7.7%: {anchor: 120, main: true, min: 80}
-      tomato_sauce: {anchor: 150, main: true, min: 120}
-      carrots: {anchor: 80, main: true}
-      onion: {anchor: 50, main: true}
-      olive_oil: {anchor: 2, main: true}
-      garlic: {anchor: 5, main: true}
+      pasta: 100
+      ground_beef: {anchor: 100, main: true}
+      tomato_sauce: {anchor: 150, min: 150}
+      carrots: 80
+      onion: 50
+      olive_oil: 2
+      garlic: 5
       tomato_paste: 8
       butter: 5
-  beef_wrap:
-    tag: lunch_dinner
-    ingredients:
-      ground_beef_16%: {anchor: 100, main: true, max: 120}
-      tortilla: {anchor: 60, main: true}
-      greek_yogurt: {anchor: 50, main: true}
-      sirrene: {anchor: 25, main: true}
-      bell_pepper: 100
-      onion: {anchor: 50, main: true}
-      garlic: {anchor: 5, main: true}
-      olive_oil: {anchor: 2, main: true}
   chicken_wrap:
     tag: lunch_dinner
     ingredients:
-      chicken_breast: {anchor: 120, main: true, min: 100}
+      chicken_breast: {anchor: 150, main: true, min: 120}
       tortilla: {anchor: 60, main: true}
-      avocado: {anchor: 70, main: true}
-      tomato: 100
+      avocado: 70
+      tomato: 60
       onion: 30
       garlic: 5
       olive_oil: 2
-  frozen_yoghurt:
-    tag: snack
-    ingredients:
-      greek_yogurt: {anchor: 180, main: true, min: 150}
-      cacao: {anchor: 10, main: true}
-      whey_protein: {anchor: 10, main: true}
-      peanut_butter: 5
   yoghurt_snack:
     tag: snack
     ingredients:
@@ -213,18 +179,37 @@ meal_library:
       cacao: 10
       whey_protein: 10
       peanut_butter: 5
+  frozen_yoghurt:
+    tag: snack
+    ingredients:
+      greek_yogurt: {anchor: 150, main: true, min: 150}
+      cacao: 10
+      whey_protein: 10
+      peanut_butter: 5
+  beef_wrap:
+    tag: lunch_dinner
+    ingredients:
+      ground_beef_16%: {anchor: 100, main: true, max: 120}
+      tortilla: {anchor: 60, main: true}
+      greek_yogurt: 50
+      feta_cheese: 15
+      bell_pepper: 100
+      onion: 50
+      garlic: 5
+      olive_oil: 2
   chicken rice:
     tag: lunch_dinner
     ingredients:
-      chicken_breast: {anchor: 120, main: true, min: 100}
-      olive_oil: {anchor: 2, main: true}
+      chicken_breast: 150
+      olive_oil: 2
       broccoli: 100
       onion: 50
       garlic: 7
       greek_yogurt: 30
       soy_sauce: 5
-      rice_white: {anchor: 90, main: true, min: 80}
+      rice_white: 90
 day:
   breakfast: banana_bread
   lunch: chicken_wrap
+  dinner: gnocchi_bolognese
   snack: yoghurt_snack

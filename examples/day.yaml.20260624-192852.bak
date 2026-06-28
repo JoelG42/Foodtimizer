@@ -60,17 +60,6 @@ ingredients:
   Chocolate ice cream selection: {kcal: 273, protein: 3.5, carbs: 21, fat: 19, fibre: 2.1}
   Hörnli: {kcal: 361, protein: 14, carbs: 68, fat: 2.8, fibre: 0}
   whey latte macchiato: {kcal: 365, protein: 85, carbs: 5.5, fat: 0.8, fibre: 0}
-  Beef 6%: {kcal: 134, protein: 20, carbs: 0, fat: 6, fibre: 0}
-  Sushi rice: {kcal: 354, protein: 6.7, carbs: 80, fat: 0.5, fibre: 0}
-  Sushi vinegar: {kcal: 145, protein: 0, carbs: 36, fat: 0, fibre: 0}
-  Sushi salmon: {kcal: 189, protein: 20, carbs: 0.5, fat: 12, fibre: 0}
-  Sriracha mayo: {kcal: 281, protein: 0.9, carbs: 26, fat: 19, fibre: 1.2}
-  Tessiner brot: {kcal: 268, protein: 9.9, carbs: 45, fat: 4.7, fibre: 2.9}
-  Couscous salad: {kcal: 139, protein: 3.2, carbs: 19.4, fat: 5.2, fibre: 1.5}
-  Strawberry: {kcal: 32, protein: 0, carbs: 7.6, fat: 0, fibre: 2}
-  Boiled potato: {kcal: 87, protein: 1.9, carbs: 20, fat: 1.8, fibre: 0}
-  flour: {kcal: 353, protein: 12, carbs: 72, fat: 1, fibre: 4}
-  natur yoghurt greek: {kcal: 108, protein: 4.9, carbs: 3.7, fat: 7.5, fibre: 0}
 ingredient_bounds:
   ground_beef: {per_meal_max: 200}
   ground_beef_16%: {per_meal_max: 200}
@@ -112,9 +101,6 @@ ingredient_bounds:
   black_sesame_seeds: {per_meal_min: 15, per_meal_max: 5}
   mars ice cream: {step: 49.5}
   chicken_breast: {per_meal_max: 150}
-recipes:
-  sirinki:
-    components: {flour: 250, natur yoghurt greek: 200, eggs: 55, olive_oil: 25, feta_cheese: 100}
 targets:
   kcal: {upper: 1800}
   protein: {lower: 100}

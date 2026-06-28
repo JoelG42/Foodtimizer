@@ -155,12 +155,70 @@ class IngredientBound:
 
 
 @dataclass(frozen=True)
+class Recipe:
+    """A composite food assembled from other ingredients (or entered as
+    totals), e.g. a home-baked banana bread.
+
+    Two ways to define one:
+
+    - **From components**: ``components`` maps ingredient name -> grams used.
+      Total macros are summed from those ingredients. ``total_grams``, if
+      given, overrides the finished weight (handy for baking, where water
+      evaporates so the result weighs less than the raw mix — calories are
+      unchanged, so per-100 g goes up).
+    - **From totals**: leave ``components`` empty and give ``total_grams``
+      plus ``total_macros`` (absolute macros for the whole batch).
+
+    Either way it yields a derived :class:`Ingredient` (macros per 100 g)
+    named the same, so you can log it by grams like any other food.
+    """
+
+    name: str
+    components: Mapping[str, float] = field(default_factory=dict)
+    total_grams: float | None = None
+    total_macros: Mapping[str, float] = field(default_factory=dict)
+
+
+def derive_recipe_macros(
+    recipe: Recipe, ingredients: Mapping[str, Ingredient]
+) -> dict[str, float]:
+    """Compute a recipe's macros **per 100 g** of the finished food.
+
+    Returns an empty dict if the recipe has no usable quantity yet (so the
+    UI can show an empty-state preview without blowing up).
+    """
+    if recipe.components:
+        totals: dict[str, float] = {}
+        raw_grams = 0.0
+        for ing_name, grams in recipe.components.items():
+            grams = float(grams)
+            raw_grams += grams
+            ing = ingredients.get(ing_name)
+            if ing is None:
+                continue
+            for macro, per_100g in ing.macros.items():
+                totals[macro] = totals.get(macro, 0.0) + grams * float(per_100g) / 100.0
+        total_grams = recipe.total_grams if recipe.total_grams else raw_grams
+    else:
+        totals = {k: float(v) for k, v in recipe.total_macros.items()}
+        total_grams = recipe.total_grams or 0.0
+
+    if not total_grams or total_grams <= 0:
+        return {}
+    return {macro: value / total_grams * 100.0 for macro, value in totals.items()}
+
+
+@dataclass(frozen=True)
 class Problem:
     """The static configuration: ingredients, targets, library, constraints.
 
     The *day selection* (which meal goes in which slot) is supplied to
     `optimize()` separately. A `default_day` may be provided in the config
     and used when no explicit day plan is given.
+
+    ``recipes`` are composite foods; each is materialized into a derived
+    entry in ``ingredients`` (per-100 g macros) by the config loader, so the
+    rest of the system treats them like ordinary ingredients.
     """
 
     ingredients: tuple[Ingredient, ...]
@@ -170,12 +228,19 @@ class Problem:
     bounds: Mapping[str, IngredientBound] = field(default_factory=dict)
     default_day: Mapping[str, str] = field(default_factory=dict)
     defaults: Defaults = field(default_factory=Defaults)
+    recipes: tuple[Recipe, ...] = ()
 
     def ingredient_by_name(self, name: str) -> Ingredient:
         for ing in self.ingredients:
             if ing.name == name:
                 return ing
         raise KeyError(f"Unknown ingredient: {name!r}")
+
+    def recipe_by_name(self, name: str) -> Recipe:
+        for recipe in self.recipes:
+            if recipe.name == name:
+                return recipe
+        raise KeyError(f"Unknown recipe: {name!r}")
 
     def meal_by_name(self, name: str) -> LibraryMeal:
         for meal in self.meal_library:

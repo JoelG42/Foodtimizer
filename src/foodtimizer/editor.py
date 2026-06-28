@@ -22,6 +22,7 @@ from .model import (
     LibraryMeal,
     MealIngredient,
     Problem,
+    Recipe,
 )
 
 # Macros shown by default in the UI even when an ingredient hasn't set them.
@@ -213,3 +214,91 @@ def delete_meal(problem: Problem, name: str) -> Problem:
     meals = tuple(m for m in problem.meal_library if m.name != name)
     day = {k: v for k, v in problem.default_day.items() if v != name}
     return replace(problem, meal_library=meals, default_day=day)
+
+
+# ---------------------------------------------------------------------------
+# Recipes / composite foods
+# ---------------------------------------------------------------------------
+
+
+def real_ingredients(problem: Problem) -> list[Ingredient]:
+    """Ingredients that are *not* recipe-derived (the editable, base foods)."""
+    recipe_names = {r.name for r in problem.recipes}
+    return [i for i in problem.ingredients if i.name not in recipe_names]
+
+
+def upsert_recipe(
+    problem: Problem,
+    name: str,
+    components: Mapping[str, float] | None = None,
+    total_grams: float | None = None,
+    total_macros: Mapping[str, float] | None = None,
+    *,
+    original_name: str | None = None,
+) -> Problem:
+    """Add or update a composite food.
+
+    Provide either ``components`` (ingredient name -> grams, all of which must
+    be existing base ingredients) or ``total_grams`` + ``total_macros``. The
+    derived per-100 g ingredient is rebuilt from this on the next load.
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("Recipe name cannot be empty.")
+
+    clean_components = {
+        str(k): float(v)
+        for k, v in (components or {}).items()
+        if v is not None and float(v) > 0
+    }
+    clean_macros = {
+        str(k): float(v)
+        for k, v in (total_macros or {}).items()
+        if v is not None
+    }
+
+    if not clean_components and not (total_grams and clean_macros):
+        raise ValueError(
+            "Add at least one ingredient, or enter total grams and macros."
+        )
+
+    recipe_names = {r.name for r in problem.recipes}
+    base_names = {i.name for i in problem.ingredients if i.name not in recipe_names}
+
+    if name in base_names:
+        raise ValueError(
+            f"'{name}' is already a plain ingredient — choose a different name."
+        )
+    for comp in clean_components:
+        if comp not in base_names:
+            raise ValueError(f"Unknown ingredient in recipe: {comp!r}")
+
+    recipe = Recipe(
+        name=name,
+        components=clean_components,
+        total_grams=(float(total_grams) if total_grams else None),
+        total_macros=clean_macros,
+    )
+
+    old = (original_name or name).strip()
+    kept_recipes = [r for r in problem.recipes if r.name not in {name, old}]
+    kept_recipes.append(recipe)
+
+    # Drop any stale derived ingredient for the old name so the reload rebuilds
+    # cleanly (and a rename doesn't resurrect the old one as a plain food).
+    new_ingredients = tuple(i for i in problem.ingredients if i.name != old)
+    new_problem = replace(
+        problem, ingredients=new_ingredients, recipes=tuple(kept_recipes)
+    )
+    if old != name:
+        new_problem = _rename_ingredient_in_meals(new_problem, old, name)
+    return new_problem
+
+
+def delete_recipe(problem: Problem, name: str) -> Problem:
+    """Remove a recipe, its derived ingredient, and any references to it."""
+    # delete_ingredient cleans up the derived ingredient, meal references and
+    # bounds; then we drop the recipe definition itself.
+    cleaned = delete_ingredient(problem, name)
+    recipes = tuple(r for r in cleaned.recipes if r.name != name)
+    return replace(cleaned, recipes=recipes)

@@ -112,9 +112,6 @@ ingredient_bounds:
   black_sesame_seeds: {per_meal_min: 15, per_meal_max: 5}
   mars ice cream: {step: 49.5}
   chicken_breast: {per_meal_max: 150}
-recipes:
-  sirinki:
-    components: {flour: 250, natur yoghurt greek: 200, eggs: 55, olive_oil: 25, feta_cheese: 100}
 targets:
   kcal: {upper: 1800}
   protein: {lower: 100}

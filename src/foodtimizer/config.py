@@ -34,7 +34,9 @@ from .model import (
     MacroTarget,
     MealIngredient,
     Problem,
+    Recipe,
     TagConstraints,
+    derive_recipe_macros,
 )
 
 
@@ -58,17 +60,88 @@ def _problem_from_dict(data: dict[str, Any]) -> Problem:
     bounds = _parse_bounds(merged_bound_specs)
     day = _parse_day(data.get("day", {}))
     defaults = _parse_defaults(data.get("defaults", {}))
+    recipes = _parse_recipes(data.get("recipes", {}))
 
-    _validate(ingredients, library, targets, tag_constraints, day, bounds)
+    # Composite foods are materialized into extra ingredients (macros per
+    # 100 g) so the optimizer, tracker and meal builder treat them like any
+    # other food. The recipe definition stays the source of truth.
+    _validate_recipes(recipes, [ing.name for ing in ingredients])
+    derived = _derive_recipe_ingredients(recipes, ingredients)
+    all_ingredients = list(ingredients) + list(derived)
+
+    _validate(all_ingredients, library, targets, tag_constraints, day, bounds)
     return Problem(
-        ingredients=tuple(ingredients),
+        ingredients=tuple(all_ingredients),
         targets=tuple(targets),
         meal_library=tuple(library),
         tag_constraints=tag_constraints,
         bounds=bounds,
         default_day=day,
         defaults=defaults,
+        recipes=tuple(recipes),
     )
+
+
+def _parse_recipes(section: Any) -> list[Recipe]:
+    if not section:
+        return []
+    if not isinstance(section, dict):
+        raise ValueError("`recipes` must be a mapping of recipe_name -> spec")
+    out: list[Recipe] = []
+    for name, spec in section.items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"recipes.{name} must be a mapping")
+        comps_raw = spec.get("components", {}) or {}
+        if not isinstance(comps_raw, dict):
+            raise ValueError(f"recipes.{name}.components must be a mapping")
+        components = {str(k): float(v) for k, v in comps_raw.items()}
+        macros_raw = spec.get("total_macros", {}) or {}
+        if macros_raw and not isinstance(macros_raw, dict):
+            raise ValueError(f"recipes.{name}.total_macros must be a mapping")
+        total_macros = {str(k): float(v) for k, v in macros_raw.items()}
+        out.append(
+            Recipe(
+                name=str(name),
+                components=components,
+                total_grams=_opt_float(spec.get("total_grams")),
+                total_macros=total_macros,
+            )
+        )
+    return out
+
+
+def _derive_recipe_ingredients(
+    recipes: list[Recipe], real_ingredients: list[Ingredient]
+) -> list[Ingredient]:
+    ing_map = {i.name: i for i in real_ingredients}
+    return [
+        Ingredient(name=r.name, macros=derive_recipe_macros(r, ing_map))
+        for r in recipes
+    ]
+
+
+def _validate_recipes(recipes: list[Recipe], real_names: list[str]) -> None:
+    known = set(real_names)
+    seen: set[str] = set()
+    for r in recipes:
+        if r.name in known:
+            raise ValueError(
+                f"Recipe {r.name!r} clashes with an ingredient of the same name; "
+                "rename one of them."
+            )
+        if r.name in seen:
+            raise ValueError(f"Duplicate recipe name: {r.name!r}")
+        seen.add(r.name)
+        for comp in r.components:
+            if comp not in known:
+                raise ValueError(
+                    f"Recipe {r.name!r} uses unknown ingredient {comp!r}"
+                )
+        if not r.components and not (r.total_grams and r.total_macros):
+            raise ValueError(
+                f"Recipe {r.name!r} needs either components, or total_grams "
+                "plus total_macros."
+            )
 
 
 # Keys recognised on an ingredient definition that are *not* macros but
@@ -510,17 +583,43 @@ def problem_to_dict(problem: Problem) -> dict[str, Any]:
     if defaults:
         data["defaults"] = defaults
 
+    # Recipe-derived ingredients are written under ``recipes`` (and rebuilt on
+    # load), so keep them out of the plain ``ingredients`` section to avoid
+    # duplicate, drifting copies.
+    recipe_names = {r.name for r in problem.recipes}
+
     data["ingredients"] = {
-        ing.name: _macros_dict(ing.macros) for ing in problem.ingredients
+        ing.name: _macros_dict(ing.macros)
+        for ing in problem.ingredients
+        if ing.name not in recipe_names
     }
 
     bounds_out: dict[str, Any] = {}
     for name, bound in problem.bounds.items():
+        if name in recipe_names:
+            continue
         spec = _bound_dict(bound)
         if spec:
             bounds_out[name] = spec
     if bounds_out:
         data["ingredient_bounds"] = bounds_out
+
+    if problem.recipes:
+        recipes_out: dict[str, Any] = {}
+        for r in problem.recipes:
+            spec: dict[str, Any] = {}
+            if r.components:
+                spec["components"] = _FlowMap(
+                    (k, _num(v)) for k, v in r.components.items()
+                )
+            if r.total_grams is not None:
+                spec["total_grams"] = _num(r.total_grams)
+            if r.total_macros:
+                spec["total_macros"] = _FlowMap(
+                    (k, _num(v)) for k, v in r.total_macros.items()
+                )
+            recipes_out[r.name] = spec
+        data["recipes"] = recipes_out
 
     targets: dict[str, Any] = {}
     for tgt in problem.targets:

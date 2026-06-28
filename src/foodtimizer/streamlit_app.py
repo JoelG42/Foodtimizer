@@ -30,8 +30,11 @@ from foodtimizer.editor import (
     all_macro_keys,
     delete_ingredient,
     delete_meal,
+    delete_recipe,
+    real_ingredients,
     upsert_ingredient,
     upsert_meal,
+    upsert_recipe,
 )
 from foodtimizer.model import (
     Ingredient,
@@ -41,6 +44,8 @@ from foodtimizer.model import (
     MealIngredient,
     Plan,
     Problem,
+    Recipe,
+    derive_recipe_macros,
 )
 from foodtimizer.replan import (
     CUSTOM_MEAL_PREFIX,
@@ -1011,7 +1016,7 @@ def _render_quick_ingredient_form(problem: Problem, config_path: str) -> None:
     This is the primary path on mobile — the full spreadsheet editor is
     tucked into an expander below for power editing on a larger screen.
     """
-    names = sorted(i.name for i in problem.ingredients)
+    names = sorted(i.name for i in real_ingredients(problem))
     _NEW = "➕ New ingredient…"
     with st.container(border=True):
         target = st.selectbox(
@@ -1117,7 +1122,7 @@ def _render_ingredient_table(problem: Problem, config_path: str) -> None:
 
     bounds = problem.bounds
     rows: list[dict[str, object]] = []
-    for ing in problem.ingredients:
+    for ing in real_ingredients(problem):
         row: dict[str, object] = {"name": ing.name}
         for m in macro_keys:
             row[m] = float(ing.macros[m]) if m in ing.macros else None
@@ -1193,11 +1198,18 @@ def _save_ingredient_table(
         st.error("You need at least one ingredient.")
         return
 
+    # Recipe-derived ingredients aren't shown in this table; preserve them so
+    # they aren't treated as deletions (they're rebuilt from `recipes` anyway).
+    recipe_names = {r.name for r in problem.recipes}
+    ingredients += [i for i in problem.ingredients if i.name in recipe_names]
+
     new_problem = replace(problem, ingredients=tuple(ingredients), bounds=new_bounds)
 
     # Anything dropped from the table is removed from meals too, so we never
-    # leave a meal pointing at a non-existent ingredient.
-    removed = {i.name for i in problem.ingredients} - seen
+    # leave a meal pointing at a non-existent ingredient. Only consider base
+    # (non-recipe) ingredients here.
+    old_base = {i.name for i in problem.ingredients if i.name not in recipe_names}
+    removed = old_base - seen
     for name in removed:
         new_problem = delete_ingredient(new_problem, name)
 
@@ -1216,6 +1228,203 @@ def _save_ingredient_table(
     _persist_problem(
         new_problem, config_path, f"Saved {len(ingredients)} ingredients"
     )
+
+
+_RECIPE_FROM_INGREDIENTS = "From ingredients"
+_RECIPE_FROM_TOTALS = "Enter totals manually"
+
+
+def _render_recipes_page(problem: Problem, config_path: str) -> None:
+    """Build composite foods (recipes) out of base ingredients or totals."""
+    st.title("🍰 Recipes & composite foods")
+    st.caption(
+        "Combine ingredients (like mom's banana bread) into a single food. "
+        "Foodtimizer works out its calories & macros per 100 g, so you can "
+        "just log how many grams you eat — and pick it for any meal. Saved to "
+        f"`{config_path}`."
+    )
+
+    if not real_ingredients(problem):
+        st.info("Add some base ingredients on the 🥕 **Ingredients** page first.")
+        return
+
+    recipe_names = [r.name for r in problem.recipes]
+    _NEW = "➕ New recipe…"
+    choice = st.selectbox(
+        "Edit an existing recipe, or create a new one",
+        options=[_NEW] + recipe_names,
+        key="recipe_select",
+    )
+    recipe = None if choice == _NEW else problem.recipe_by_name(choice)
+    _render_recipe_form(problem, config_path, recipe)
+
+
+def _render_recipe_preview(
+    per100: dict[str, float], total_grams: float, macro_opts: list[str]
+) -> None:
+    if not per100:
+        st.info("Add ingredients (or totals) to see the nutrition preview.")
+        return
+    st.markdown("**Per 100 g** — this is what gets saved as the food:")
+    shown = [m for m in macro_opts if m in per100] or list(per100.keys())
+    cols = st.columns(len(shown))
+    for col, m in zip(cols, shown):
+        col.metric(_macro_header(m), f"{per100[m]:.1f}")
+    kcal100 = per100.get("kcal", 0.0)
+    st.caption(
+        f"Whole batch ≈ {total_grams:.0f} g · "
+        f"{kcal100 * total_grams / 100:.0f} kcal total"
+    )
+
+
+def _render_recipe_form(
+    problem: Problem, config_path: str, recipe: Recipe | None
+) -> None:
+    is_edit = recipe is not None
+    fkey = recipe.name if is_edit else "__new__"
+    ing_map = {i.name: i for i in problem.ingredients}
+    base_names = sorted(i.name for i in real_ingredients(problem))
+    macro_opts = all_macro_keys(problem)
+
+    name = st.text_input(
+        "Recipe name",
+        value=(recipe.name if is_edit else ""),
+        placeholder="e.g. moms_banana_bread",
+        key=f"recipe_name_{fkey}",
+    )
+
+    modes = [_RECIPE_FROM_INGREDIENTS, _RECIPE_FROM_TOTALS]
+    default_mode = (
+        _RECIPE_FROM_TOTALS if (is_edit and not recipe.components) else _RECIPE_FROM_INGREDIENTS
+    )
+    mode = st.radio(
+        "How do you want to define it?",
+        options=modes,
+        index=modes.index(default_mode),
+        horizontal=True,
+        key=f"recipe_mode_{fkey}",
+    )
+
+    components: dict[str, float] = {}
+    total_grams: float | None = None
+    total_macros: dict[str, float] = {}
+
+    if mode == _RECIPE_FROM_INGREDIENTS:
+        rows = (
+            [{"ingredient": k, "grams": float(v)} for k, v in recipe.components.items()]
+            if is_edit and recipe.components
+            else []
+        )
+        edited = st.data_editor(
+            pd.DataFrame(rows, columns=["ingredient", "grams"]),
+            column_config={
+                "ingredient": st.column_config.SelectboxColumn(
+                    "ingredient", options=base_names, required=True
+                ),
+                "grams": st.column_config.NumberColumn("grams", min_value=0.0),
+            },
+            num_rows="dynamic",
+            hide_index=True,
+            use_container_width=True,
+            key=f"recipe_components_{fkey}",
+        )
+        for record in edited.to_dict("records"):
+            ing = record.get("ingredient")
+            grams = _optnum(record.get("grams"))
+            if ing and not (isinstance(ing, float) and math.isnan(ing)) and grams:
+                components[str(ing)] = grams
+
+        raw_sum = sum(components.values())
+        finished = st.number_input(
+            "Finished weight in g (optional)",
+            min_value=0,
+            step=1,
+            value=(int(recipe.total_grams) if is_edit and recipe.total_grams else None),
+            placeholder=(f"{raw_sum:.0f} (raw total)" if raw_sum else "e.g. 800"),
+            key=f"recipe_finished_{fkey}",
+            help=(
+                "If the baked result weighs less than the raw ingredients "
+                "(water evaporates), enter the final weight. Calories stay the "
+                "same, so the per-100 g values go up."
+            ),
+        )
+        if finished and finished > 0:
+            total_grams = float(finished)
+
+        preview = Recipe(name=name or "preview", components=components, total_grams=total_grams)
+        _render_recipe_preview(
+            derive_recipe_macros(preview, ing_map), total_grams or raw_sum, macro_opts
+        )
+    else:
+        c1, c2 = st.columns(2)
+        tg = c1.number_input(
+            "Total grams (whole batch)", min_value=0, step=1,
+            value=(int(recipe.total_grams) if is_edit and recipe.total_grams else None),
+            placeholder="e.g. 800", key=f"recipe_tg_{fkey}",
+        )
+        kcal = c2.number_input(
+            "Total kcal (whole batch)", min_value=0, step=10,
+            value=(
+                int(recipe.total_macros["kcal"])
+                if is_edit and recipe.total_macros.get("kcal") is not None
+                else None
+            ),
+            placeholder="e.g. 2400", key=f"recipe_kcal_{fkey}",
+        )
+        c3, c4, c5 = st.columns(3)
+        macro_inputs = {
+            "protein": c3.number_input(
+                "protein g", min_value=0.0, step=1.0,
+                value=(float(recipe.total_macros["protein"]) if is_edit and "protein" in recipe.total_macros else None),
+                placeholder="0", key=f"recipe_p_{fkey}",
+            ),
+            "carbs": c4.number_input(
+                "carbs g", min_value=0.0, step=1.0,
+                value=(float(recipe.total_macros["carbs"]) if is_edit and "carbs" in recipe.total_macros else None),
+                placeholder="0", key=f"recipe_c_{fkey}",
+            ),
+            "fat": c5.number_input(
+                "fat g", min_value=0.0, step=1.0,
+                value=(float(recipe.total_macros["fat"]) if is_edit and "fat" in recipe.total_macros else None),
+                placeholder="0", key=f"recipe_f_{fkey}",
+            ),
+        }
+        total_grams = float(tg) if tg else None
+        kcal_val = _optnum(kcal)
+        if kcal_val is not None:
+            total_macros["kcal"] = kcal_val
+        for macro, raw in macro_inputs.items():
+            val = _optnum(raw)
+            if val is not None:
+                total_macros[macro] = val
+
+        if total_grams and total_macros:
+            preview = Recipe(name=name or "preview", total_grams=total_grams, total_macros=total_macros)
+            _render_recipe_preview(
+                derive_recipe_macros(preview, ing_map), total_grams, macro_opts
+            )
+        else:
+            st.info("Enter total grams and at least the kcal to see a preview.")
+
+    c_save, c_del, _ = st.columns([1, 1, 3])
+    if c_save.button("💾 Save recipe", type="primary", key=f"save_recipe_{fkey}"):
+        try:
+            new_problem = upsert_recipe(
+                problem,
+                name,
+                components=(components if mode == _RECIPE_FROM_INGREDIENTS else None),
+                total_grams=total_grams,
+                total_macros=(total_macros if mode == _RECIPE_FROM_TOTALS else None),
+                original_name=(recipe.name if is_edit else None),
+            )
+        except ValueError as e:
+            st.error(str(e))
+            return
+        _persist_problem(new_problem, config_path, f"Saved recipe '{name.strip()}'")
+    if is_edit and c_del.button("🗑 Delete recipe", key=f"del_recipe_{fkey}"):
+        _persist_problem(
+            delete_recipe(problem, recipe.name), config_path, f"Deleted '{recipe.name}'"
+        )
 
 
 _TAG_CUSTOM = "➕ custom tag…"
@@ -1476,6 +1685,7 @@ def _render_tracker_page(problem: Problem, logs_dir: str) -> None:
 
 _PAGE_TRACKER = "🍽️ Tracker"
 _PAGE_INGREDIENTS = "🥕 Ingredients"
+_PAGE_RECIPES = "🍰 Recipes"
 _PAGE_MEALS = "📖 Meals"
 
 
@@ -1528,7 +1738,7 @@ def main() -> None:
     # (the sidebar is collapsed behind the hamburger on small screens).
     page = st.radio(
         "Navigate",
-        options=[_PAGE_TRACKER, _PAGE_INGREDIENTS, _PAGE_MEALS],
+        options=[_PAGE_TRACKER, _PAGE_INGREDIENTS, _PAGE_RECIPES, _PAGE_MEALS],
         key="nav_page",
         horizontal=True,
         label_visibility="collapsed",
@@ -1536,6 +1746,8 @@ def main() -> None:
 
     if page == _PAGE_INGREDIENTS:
         _render_ingredients_page(problem, config_path)
+    elif page == _PAGE_RECIPES:
+        _render_recipes_page(problem, config_path)
     elif page == _PAGE_MEALS:
         _render_meals_page(problem, config_path)
     else:
