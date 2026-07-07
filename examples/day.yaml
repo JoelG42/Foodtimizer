@@ -71,6 +71,24 @@ ingredients:
   Boiled potato: {kcal: 87, protein: 1.9, carbs: 20, fat: 1.8, fibre: 0}
   flour: {kcal: 353, protein: 12, carbs: 72, fat: 1, fibre: 4}
   natur yoghurt greek: {kcal: 108, protein: 4.9, carbs: 3.7, fat: 7.5, fibre: 0}
+  snickers ice cream: {kcal: 342, protein: 5.9, carbs: 33, fat: 20, fibre: 0}
+  popcorn: {kcal: 377, protein: 10, carbs: 71, fat: 0, fibre: 11}
+  Puder zucker: {kcal: 400, protein: 0, carbs: 100, fat: 0, fibre: 0}
+  Lammnierstuck: {kcal: 120, protein: 21, carbs: 0, fat: 4, fibre: 0}
+  chocolate rice cake: {kcal: 491, protein: 6.5, carbs: 62, fat: 23, fibre: 5}
+  Steinofen losange: {kcal: 244, protein: 8.1, carbs: 46, fat: 2.3, fibre: 3.2}
+  Kebab spiess: {kcal: 109, protein: 23, carbs: 0, fat: 1.6, fibre: 0}
+  Deli chicken: {kcal: 95, protein: 21, carbs: 0, fat: 1, fibre: 0}
+  Essiggurken: {kcal: 20, protein: 0.6, carbs: 4.1, fat: 0.5, fibre: 0.8}
+  Senf: {kcal: 102, protein: 6.3, carbs: 3.8, fat: 5.6, fibre: 2.9}
+  himbeeren: {kcal: 52, protein: 1.2, carbs: 12, fat: 0.6, fibre: 7}
+  Hinterschinken: {kcal: 108, protein: 20, carbs: 0, fat: 2.5, fibre: 0}
+  Halbweissbrot: {kcal: 244, protein: 9.6, carbs: 47, fat: 1.1, fibre: 3.6}
+  Salz stängeli: {kcal: 370, protein: 10, carbs: 80, fat: 0.8, fibre: 2.3}
+  Nutella: {kcal: 539, protein: 6.3, carbs: 57.5, fat: 30.9, fibre: 0}
+  cafe glace: {kcal: 201, protein: 3.1, carbs: 23, fat: 10, fibre: 0}
+  Pizza (restaurant): {kcal: 250, protein: 10, carbs: 30, fat: 12, fibre: 0}
+  Twister brot: {kcal: 143, protein: 9.4, carbs: 48, fat: 1, fibre: 2.3}
 ingredient_bounds:
   ground_beef: {per_meal_max: 200}
   ground_beef_16%: {per_meal_max: 200}
@@ -115,6 +133,10 @@ ingredient_bounds:
 recipes:
   sirinki:
     components: {flour: 250, natur yoghurt greek: 200, eggs: 55, olive_oil: 25, feta_cheese: 100}
+  Sirinki sesam:
+    components: {flour: 500, natur yoghurt greek: 400, olive_oil: 50, eggs: 55, feta_cheese: 170}
+  kaiserschmarren:
+    components: {eggs: 110, flour: 60, milk_3.9%: 120, butter: 20}
 targets:
   kcal: {upper: 1800}
   protein: {lower: 100}
@@ -138,33 +160,6 @@ meal_library:
       milk_3.9%: {anchor: 100, main: true, max: 200}
       cacao: 5
       peanut_butter: 10
-  banana_omlettte:
-    tag: breakfast
-    ingredients:
-      eggs: {anchor: 165, main: true}
-      banana: {anchor: 100, main: true}
-      peanut_butter: 10
-      milk_3.9%: {anchor: 60, main: true}
-      butter: {anchor: 5, main: true}
-  banana_bread:
-    tag: breakfast
-    ingredients:
-      eggs: {anchor: 110, main: true}
-      banana: {anchor: 100, main: true}
-      whey_protein: {anchor: 15, main: true}
-      cacao: {anchor: 5, main: true}
-      milk_3.9%: {anchor: 30, main: true}
-      peanut_butter: 10
-  greek_salad:
-    tag: lunch_dinner
-    ingredients:
-      cucumber: {anchor: 130, main: true, min: 130}
-      tomato: {anchor: 300, main: true, min: 150}
-      onion: {anchor: 40, main: true}
-      olive_oil: {anchor: 12, main: true, min: 10}
-      sirrene: {anchor: 70, main: true, min: 40}
-      vinegar: {anchor: 12, main: true}
-      sonnen_brot: {anchor: 50, main: true, min: 50}
   pasta_bolognese:
     tag: lunch_dinner
     ingredients:
@@ -224,6 +219,41 @@ meal_library:
       greek_yogurt: 30
       soy_sauce: 5
       rice_white: {anchor: 90, main: true, min: 80}
+  banana_omlettte:
+    tag: breakfast
+    ingredients:
+      eggs: {anchor: 110, main: true}
+      banana: {anchor: 100, main: true}
+      peanut_butter: 10
+      milk_3.9%: {anchor: 60, main: true}
+      butter: {anchor: 5, main: true}
+  banana_bread:
+    tag: breakfast
+    ingredients:
+      eggs: {anchor: 55, main: true}
+      banana: {anchor: 100, main: true}
+      whey_protein: {anchor: 10, main: true}
+      cacao: {anchor: 10, main: true}
+      milk_3.9%: {anchor: 70, main: true}
+      Chocolate 70%: 10
+  greek_salad:
+    tag: lunch_dinner
+    ingredients:
+      cucumber: {anchor: 130, main: true, min: 130}
+      tomato: {anchor: 300, main: true, min: 150}
+      onion: {anchor: 40, main: true}
+      olive_oil: {anchor: 10, main: true, min: 10}
+      sirrene: {anchor: 70, main: true, min: 40}
+      vinegar: {anchor: 18, main: true}
+      Steinofen losange: {anchor: 65, main: true, min: 50}
+  deli sandwich:
+    tag: snack
+    ingredients:
+      Steinofen losange: {anchor: 65, main: true}
+      Deli chicken: {anchor: 150, main: true}
+      tomato: {anchor: 120, main: true}
+      Essiggurken: {anchor: 40, main: true}
+      Senf: {anchor: 10, main: true}
 day:
   breakfast: banana_bread
   lunch: chicken_wrap

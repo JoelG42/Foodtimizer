@@ -1,0 +1,10 @@
+# Dependencies for hosted deployment (Streamlit Community Cloud reads this).
+# Installs the package itself plus the cloud extras (Streamlit, pandas,
+# SQLAlchemy, Postgres driver). Local dev can keep using `pip install -e .`.
+-e .[cloud]
+
+# Core optimizer deps are declared in pyproject too, but pinned-ish here so
+# the cloud build is reproducible.
+numpy>=1.26
+scipy>=1.11
+pyyaml>=6.0

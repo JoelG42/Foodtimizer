@@ -669,9 +669,11 @@ def problem_to_dict(problem: Problem) -> dict[str, Any]:
     return data
 
 
-def dump_problem(problem: Problem) -> str:
-    """Return the YAML text for ``problem`` (validates by re-parsing)."""
-    data = problem_to_dict(problem)
+def config_dict_to_yaml(data: dict[str, Any]) -> str:
+    """Serialize a config dict (as from :func:`problem_to_dict`) to YAML text.
+
+    Validates by re-parsing so we never persist something we can't read back.
+    """
     text = yaml.dump(
         data,
         Dumper=_ProblemDumper,
@@ -679,9 +681,18 @@ def dump_problem(problem: Problem) -> str:
         default_flow_style=False,
         allow_unicode=True,
     )
-    # Fail fast if we produced something we can't read back.
     _problem_from_dict(yaml.safe_load(text))
     return text
+
+
+def validate_config_dict(data: dict[str, Any]) -> None:
+    """Raise if ``data`` isn't a loadable config (used before DB writes)."""
+    _problem_from_dict(data)
+
+
+def dump_problem(problem: Problem) -> str:
+    """Return the YAML text for ``problem`` (validates by re-parsing)."""
+    return config_dict_to_yaml(problem_to_dict(problem))
 
 
 def save_problem(problem: Problem, path: str | Path, *, backup: bool = True) -> Path:

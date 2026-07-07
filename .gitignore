@@ -45,6 +45,10 @@ logs/
 
 # Atomic-write temp files dropped by the tracker on crash.
 *.json.tmp
+*.yaml.tmp
+
+# Timestamped config backups written on the first overwrite of a config file.
+*.bak
 
 # Local environment files (API keys etc.)
 .env

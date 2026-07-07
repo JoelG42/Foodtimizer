@@ -24,7 +24,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from foodtimizer.config import load_problem, save_problem
+from foodtimizer import storage as store
+from foodtimizer.config import _problem_from_dict, load_problem, problem_to_dict
 from foodtimizer.editor import (
     INGREDIENT_BOUND_FIELDS,
     all_macro_keys,
@@ -57,10 +58,9 @@ from foodtimizer.replan import (
 from foodtimizer.tracker import (
     DayLog,
     compute_totals,
-    list_logged_dates,
-    load_day_log,
+    daylog_from_data,
+    daylog_to_data,
     make_entry,
-    save_day_log,
     unknown_ingredients,
 )
 
@@ -102,6 +102,48 @@ def _macro_color(pct: float, lower_only: bool) -> str:
     return "red"
 
 
+def _database_url() -> str | None:
+    """Return the DB connection string, if one is configured.
+
+    Looks first in Streamlit secrets (``[database] url = "..."`` — this is how
+    you set it on Streamlit Community Cloud), then falls back to the
+    ``DATABASE_URL`` environment variable. Returns ``None`` for local file mode.
+    """
+    try:
+        url = st.secrets["database"]["url"]  # type: ignore[index]
+        if url:
+            return str(url)
+    except Exception:  # noqa: BLE001 - no secrets file / key locally is fine
+        pass
+    return os.environ.get("DATABASE_URL") or None
+
+
+@st.cache_resource(show_spinner=False)
+def _get_engine(url: str):  # type: ignore[no-untyped-def]
+    """Create (and cache for the session) a SQLAlchemy engine for ``url``."""
+    from sqlalchemy import create_engine
+
+    return create_engine(url, pool_pre_ping=True)
+
+
+def _configure_storage(args: argparse.Namespace) -> None:
+    """Select the persistence backend and register it as the active one."""
+    url = _database_url()
+    if url:
+        backend = store.SqlStorage(_get_engine(url))
+        # First run against a fresh database: seed it from the bundled config
+        # so you start with your existing ingredients/meals/recipes.
+        if backend.load_config() is None:
+            try:
+                seed = problem_to_dict(load_problem(args.config))
+                backend.save_config(seed)
+            except Exception:  # noqa: BLE001 - empty seed is acceptable
+                pass
+        store.configure(backend)
+    else:
+        store.configure(store.FileStorage(args.config, args.logs_dir))
+
+
 def _render_sidebar(args: argparse.Namespace) -> tuple[Problem, str, str]:
     """Sidebar: config + logs-dir picker, lightweight library stats.
 
@@ -116,21 +158,22 @@ def _render_sidebar(args: argparse.Namespace) -> tuple[Problem, str, str]:
         key="wide_layout",
         help="Off = phone-friendly centered layout. On = full-width desktop layout.",
     )
-    config_path = st.sidebar.text_input(
-        "Config path",
-        value=st.session_state.get("config_path", args.config),
-        help="YAML file with your ingredients & targets.",
-    )
-    logs_dir = st.sidebar.text_input(
-        "Logs folder",
-        value=st.session_state.get("logs_dir", args.logs_dir),
-        help="Directory to read/write daily log JSON files.",
-    )
-    st.session_state["config_path"] = config_path
-    st.session_state["logs_dir"] = logs_dir
 
+    # Pick and activate the persistence backend for this run (DB when a
+    # database URL is configured, otherwise local files).
+    _configure_storage(args)
+
+    if store.is_file_backed():
+        st.sidebar.caption(f"💾 Local files (`{store.location_label()}`)")
+    else:
+        st.sidebar.caption("🗄️ Connected to the cloud database")
+
+    raw = store.load_config()
+    if raw is None:
+        st.sidebar.error("No config found in storage.")
+        st.stop()
     try:
-        problem = load_problem(config_path)
+        problem = _problem_from_dict(raw)
     except Exception as e:  # noqa: BLE001 - surfaced to the UI
         st.sidebar.error(f"Could not load config: {e}")
         st.stop()
@@ -141,26 +184,15 @@ def _render_sidebar(args: argparse.Namespace) -> tuple[Problem, str, str]:
         f"{len(problem.meal_library)} meals in library"
     )
 
-    # Show when this config was last modified so you can see at a glance
-    # whether the running UI is reflecting your latest edit.
-    try:
-        mtime = Path(config_path).stat().st_mtime
-        from datetime import datetime as _dt
-
-        st.sidebar.caption(
-            f"Config last modified: {_dt.fromtimestamp(mtime).strftime('%H:%M:%S')}"
-        )
-    except OSError:
-        pass
-
-    if st.sidebar.button("🔄 Reload config", help="Re-read the YAML from disk now."):
+    if st.sidebar.button("🔄 Reload", help="Re-read the config from storage now."):
         st.rerun()
 
-    logged = list_logged_dates(logs_dir)
+    logged = store.logged_dates()
     if logged:
         st.sidebar.caption(f"{len(logged)} day(s) logged so far")
 
-    return problem, config_path, logs_dir
+    label = store.location_label()
+    return problem, label, label
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +416,16 @@ _MEAL_SLOTS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _load_day(on_date: date) -> DayLog:
+    """Load a day's log from the active storage backend."""
+    return daylog_from_data(on_date, store.load_day(on_date))
+
+
+def _save_day(log: DayLog) -> None:
+    """Persist a day's log to the active storage backend."""
+    store.save_day(log.log_date, daylog_to_data(log))
+
+
 def _render_entry_row(
     orig_idx: int,
     entry: LogEntry,
@@ -400,7 +442,7 @@ def _render_entry_row(
     )
     # Key off the *original* index so deletes work after grouping.
     if c_del.button("🗑", key=f"del_{orig_idx}", help="Delete entry"):
-        save_day_log(logs_dir, log.with_removed(orig_idx))
+        _save_day(log.with_removed(orig_idx))
         st.rerun()
 
 
@@ -438,11 +480,10 @@ def _render_slot_add_form(
     if not grams or grams <= 0:
         st.warning("Enter grams.")
         return
-    save_day_log(
-        logs_dir,
+    _save_day(
         log.with_added(
             make_entry(ingredient=ingredient, grams=float(grams), slot=slot)
-        ),
+        )
     )
     st.toast(f"Added {grams:g} g {ingredient}", icon="✅")
     st.rerun()
@@ -973,15 +1014,16 @@ def _optnum(v: object) -> float | None:
 
 
 def _persist_problem(problem: Problem, config_path: str, msg: str) -> None:
-    """Save ``problem`` to ``config_path`` then rerun so every page refreshes.
+    """Save ``problem`` to the active storage backend, then rerun.
 
-    On the first overwrite of an existing config a timestamped ``.bak`` is
-    kept next to it (see :func:`save_problem`), so nothing is lost.
+    ``config_path`` is kept only for the on-screen label; the actual write
+    goes through the configured backend (local file or cloud database). For
+    files, a timestamped ``.bak`` is kept on the first overwrite.
     """
     try:
-        save_problem(problem, config_path)
+        store.save_config(problem_to_dict(problem))
     except Exception as e:  # noqa: BLE001 - surfaced to the UI
-        st.error(f"Could not save to `{config_path}`: {e}")
+        st.error(f"Could not save to {store.location_label()}: {e}")
         return
     st.toast(msg, icon="💾")
     st.rerun()
@@ -1648,7 +1690,7 @@ def _render_tracker_page(problem: Problem, logs_dir: str) -> None:
     st.title("🍽️ Foodtimizer")
 
     sel_date = _render_date_picker()
-    log = load_day_log(logs_dir, sel_date)
+    log = _load_day(sel_date)
 
     # Warn about stale entries referencing ingredients no longer in the config.
     stale = unknown_ingredients(log, ingredient_map)
@@ -1677,10 +1719,13 @@ def _render_tracker_page(problem: Problem, logs_dir: str) -> None:
         )
         _render_planner(problem, log, ingredient_map)
 
-    st.caption(
-        f"Log file: `{Path(logs_dir) / (sel_date.isoformat() + '.json')}` · "
-        "edit by hand if you ever need to — it's just JSON."
-    )
+    if store.is_file_backed():
+        st.caption(
+            f"Log file: `{Path(logs_dir) / (sel_date.isoformat() + '.json')}` · "
+            "edit by hand if you ever need to — it's just JSON."
+        )
+    else:
+        st.caption(f"Saved to {store.location_label()}.")
 
 
 _PAGE_TRACKER = "🍽️ Tracker"

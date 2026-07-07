@@ -131,6 +131,23 @@ def unknown_ingredients(log: DayLog, ingredients: Mapping[str, Ingredient]) -> l
 # ---------------------------------------------------------------------------
 
 
+def daylog_to_data(log: DayLog) -> dict[str, Any]:
+    """Serialize a day log to the plain dict shape used on disk / in the DB."""
+    return {
+        "date": log.log_date.isoformat(),
+        "entries": [e.to_dict() for e in log.entries],
+    }
+
+
+def daylog_from_data(on_date: date, data: Mapping[str, Any] | None) -> DayLog:
+    """Rebuild a :class:`DayLog` from stored data (``None`` -> empty day)."""
+    entries_raw = (data or {}).get("entries", []) or []
+    return DayLog(
+        log_date=on_date,
+        entries=tuple(LogEntry.from_dict(e) for e in entries_raw),
+    )
+
+
 def log_path(logs_dir: Path | str, on_date: date) -> Path:
     """Return the on-disk path for the day log (no I/O performed)."""
     return Path(logs_dir) / f"{on_date.isoformat()}.json"

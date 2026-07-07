@@ -16,9 +16,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "sqlalchemy>=2.0"]
 llm = ["openai>=1.0"]
-app = ["streamlit>=1.30"]
+app = ["streamlit>=1.31", "pandas>=2.0"]
+# Cloud deployment (e.g. Streamlit Community Cloud) with a hosted database.
+cloud = ["streamlit>=1.31", "pandas>=2.0", "sqlalchemy>=2.0", "psycopg2-binary>=2.9"]
 
 [project.scripts]
 foodtimizer = "foodtimizer.cli:main"
