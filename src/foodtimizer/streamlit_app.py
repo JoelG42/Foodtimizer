@@ -1756,15 +1756,19 @@ def _inject_mobile_css() -> None:
     st.markdown(
         """
         <style>
-          /* Keep Streamlit's fixed top toolbar above the page content and
-             make sure our content starts *below* it (it's ~3.75rem tall), so
-             the top navigation isn't clipped by it. */
+          /* Keep Streamlit's fixed top toolbar above page content, and make
+             sure our content starts *below* it (it's ~3.75rem tall) so the top
+             navigation isn't clipped. We use !important and cover both the
+             legacy `.block-container` class and the newer testid, because
+             Streamlit's own stylesheet otherwise overrides our padding. */
           header[data-testid="stHeader"] { z-index: 999; }
-          .block-container {
-              padding-top: 4.5rem;
-              padding-bottom: 4rem;
-              padding-left: 0.9rem;
-              padding-right: 0.9rem;
+          .block-container,
+          div[data-testid="stMainBlockContainer"],
+          div[data-testid="stAppViewBlockContainer"] {
+              padding-top: 4.5rem !important;
+              padding-bottom: 4rem !important;
+              padding-left: 0.9rem !important;
+              padding-right: 0.9rem !important;
           }
           /* Make the top nav radio read like a segmented toolbar. */
           div[role="radiogroup"] {
