@@ -144,6 +144,50 @@ def test_logged_dates_sorted_desc(tmp_path):
     ]
 
 
+def test_sql_namespaces_are_isolated(tmp_path):
+    """Two users sharing one database must never see each other's data."""
+    sqlalchemy = pytest.importorskip("sqlalchemy")
+    from foodtimizer.storage import SqlStorage
+
+    engine = sqlalchemy.create_engine(f"sqlite:///{tmp_path / 'shared.db'}")
+    alice = SqlStorage(engine, namespace="u_alice")
+    bob = SqlStorage(engine, namespace="u_bob")
+
+    alice.save_config(problem_to_dict(_problem()))
+    alice.save_day(date(2026, 7, 7), daylog_to_data(_day()))
+
+    # Bob's scope is empty despite sharing the same table.
+    assert bob.load_config() is None
+    assert bob.load_day(date(2026, 7, 7)) is None
+    assert bob.logged_dates() == []
+
+    # Alice still sees her own data.
+    assert alice.load_config() is not None
+    assert alice.logged_dates() == [date(2026, 7, 7)]
+
+    # Bob writing his own config doesn't disturb Alice's.
+    p_bob = _problem()
+    p_bob = Problem(
+        ingredients=(Ingredient(name="tofu", macros={"kcal": 120.0}),),
+        targets=p_bob.targets,
+        meal_library=(LibraryMeal(name="m", tag="snack", ingredients=("tofu",)),),
+    )
+    bob.save_config(problem_to_dict(p_bob))
+    assert set(alice.load_config()["ingredients"]) == {"eggs", "banana"}
+    assert set(bob.load_config()["ingredients"]) == {"tofu"}
+
+
+def test_file_namespaces_are_isolated(tmp_path):
+    """FileStorage nests each user's files under their own subfolder."""
+    alice = FileStorage(tmp_path / "day.yaml", tmp_path / "logs", namespace="u_alice")
+    bob = FileStorage(tmp_path / "day.yaml", tmp_path / "logs", namespace="u_bob")
+
+    alice.save_config(problem_to_dict(_problem()))
+    assert bob.load_config() is None
+    assert alice.load_config() is not None
+    assert alice.config_path != bob.config_path
+
+
 def test_file_backup_created_on_overwrite(tmp_path):
     cfg = tmp_path / "day.yaml"
     storage = FileStorage(cfg, tmp_path / "logs")

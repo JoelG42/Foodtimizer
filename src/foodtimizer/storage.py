@@ -46,11 +46,26 @@ class Storage(Protocol):
 
 
 class FileStorage:
-    """Original behavior: a YAML config file + one JSON file per day."""
+    """Original behavior: a YAML config file + one JSON file per day.
 
-    def __init__(self, config_path: str | Path, logs_dir: str | Path) -> None:
-        self.config_path = Path(config_path)
-        self.logs_dir = Path(logs_dir)
+    When a ``namespace`` is given (multi-user mode), each user's data is
+    nested under its own subfolder so accounts never see each other's files.
+    """
+
+    def __init__(
+        self,
+        config_path: str | Path,
+        logs_dir: str | Path,
+        namespace: str | None = None,
+    ) -> None:
+        config_path = Path(config_path)
+        logs_dir = Path(logs_dir)
+        if namespace:
+            config_path = config_path.parent / namespace / config_path.name
+            logs_dir = logs_dir / namespace
+        self.config_path = config_path
+        self.logs_dir = logs_dir
+        self.namespace = namespace
 
     def load_config(self) -> Optional[dict[str, Any]]:
         if not self.config_path.exists():
@@ -116,11 +131,18 @@ class SqlStorage:
     Works on any SQLAlchemy URL. Values are stored as JSON text (portable
     across SQLite and Postgres), and upserts use the ``ON CONFLICT`` syntax
     supported by both.
+
+    When a ``namespace`` is given (multi-user mode), all keys are prefixed
+    with it so each user's config and logs are isolated from everyone else's.
     """
 
-    def __init__(self, engine: Any) -> None:
+    def __init__(self, engine: Any, namespace: str | None = None) -> None:
         self.engine = engine
+        self.namespace = namespace
         self._ensure_table()
+
+    def _key(self, base: str) -> str:
+        return f"{self.namespace}:{base}" if self.namespace else base
 
     def _ensure_table(self) -> None:
         from sqlalchemy import text
@@ -156,30 +178,31 @@ class SqlStorage:
             )
 
     def load_config(self) -> Optional[dict[str, Any]]:
-        return self._get(_CONFIG_KEY)
+        return self._get(self._key(_CONFIG_KEY))
 
     def save_config(self, data: dict[str, Any]) -> None:
         validate_config_dict(data)
-        self._set(_CONFIG_KEY, data)
+        self._set(self._key(_CONFIG_KEY), data)
 
     def load_day(self, on_date: date) -> Optional[dict[str, Any]]:
-        return self._get(f"{_LOG_PREFIX}{on_date.isoformat()}")
+        return self._get(self._key(f"{_LOG_PREFIX}{on_date.isoformat()}"))
 
     def save_day(self, on_date: date, data: dict[str, Any]) -> None:
-        self._set(f"{_LOG_PREFIX}{on_date.isoformat()}", data)
+        self._set(self._key(f"{_LOG_PREFIX}{on_date.isoformat()}"), data)
 
     def logged_dates(self) -> list[date]:
         from sqlalchemy import text
 
+        prefix = self._key(_LOG_PREFIX)
         with self.engine.begin() as conn:
             rows = conn.execute(
                 text("SELECT k FROM foodtimizer_kv WHERE k LIKE :p"),
-                {"p": f"{_LOG_PREFIX}%"},
+                {"p": f"{prefix}%"},
             ).fetchall()
         out: list[date] = []
         for (k,) in rows:
             try:
-                out.append(date.fromisoformat(k[len(_LOG_PREFIX):]))
+                out.append(date.fromisoformat(k[len(prefix):]))
             except ValueError:
                 continue
         return sorted(out, reverse=True)

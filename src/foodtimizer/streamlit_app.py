@@ -24,6 +24,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from foodtimizer import auth
 from foodtimizer import storage as store
 from foodtimizer.config import _problem_from_dict, load_problem, problem_to_dict
 from foodtimizer.editor import (
@@ -126,22 +127,27 @@ def _get_engine(url: str):  # type: ignore[no-untyped-def]
     return create_engine(url, pool_pre_ping=True)
 
 
-def _configure_storage(args: argparse.Namespace) -> None:
-    """Select the persistence backend and register it as the active one."""
+def _configure_storage(args: argparse.Namespace, namespace: str | None) -> None:
+    """Select the persistence backend and register it as the active one.
+
+    ``namespace`` isolates data per signed-in user (multi-user mode); it is
+    ``None`` in single-user mode.
+    """
     url = _database_url()
     if url:
-        backend = store.SqlStorage(_get_engine(url))
-        # First run against a fresh database: seed it from the bundled config
-        # so you start with your existing ingredients/meals/recipes.
-        if backend.load_config() is None:
-            try:
-                seed = problem_to_dict(load_problem(args.config))
-                backend.save_config(seed)
-            except Exception:  # noqa: BLE001 - empty seed is acceptable
-                pass
-        store.configure(backend)
+        backend: store.Storage = store.SqlStorage(_get_engine(url), namespace=namespace)
     else:
-        store.configure(store.FileStorage(args.config, args.logs_dir))
+        backend = store.FileStorage(args.config, args.logs_dir, namespace=namespace)
+
+    # First run for this user/scope: seed from the bundled starter config so
+    # they begin with a usable set of ingredients/targets rather than nothing.
+    if backend.load_config() is None:
+        try:
+            seed = problem_to_dict(load_problem(args.config))
+            backend.save_config(seed)
+        except Exception:  # noqa: BLE001 - an empty seed is acceptable
+            pass
+    store.configure(backend)
 
 
 def _render_sidebar(args: argparse.Namespace) -> tuple[Problem, str, str]:
@@ -159,9 +165,14 @@ def _render_sidebar(args: argparse.Namespace) -> tuple[Problem, str, str]:
         help="Off = phone-friendly centered layout. On = full-width desktop layout.",
     )
 
+    # Account controls (only shown when auth is configured).
+    auth.render_account_controls()
+
     # Pick and activate the persistence backend for this run (DB when a
-    # database URL is configured, otherwise local files).
-    _configure_storage(args)
+    # database URL is configured, otherwise local files). Data is isolated
+    # per signed-in user when auth is on.
+    namespace = auth.current_namespace() if auth.auth_configured() else None
+    _configure_storage(args, namespace)
 
     if store.is_file_backed():
         st.sidebar.caption(f"💾 Local files (`{store.location_label()}`)")
@@ -1745,14 +1756,22 @@ def _inject_mobile_css() -> None:
     st.markdown(
         """
         <style>
+          /* Keep Streamlit's fixed top toolbar above the page content and
+             make sure our content starts *below* it (it's ~3.75rem tall), so
+             the top navigation isn't clipped by it. */
+          header[data-testid="stHeader"] { z-index: 999; }
           .block-container {
-              padding-top: 2.2rem;
+              padding-top: 4.5rem;
               padding-bottom: 4rem;
               padding-left: 0.9rem;
               padding-right: 0.9rem;
           }
           /* Make the top nav radio read like a segmented toolbar. */
-          div[role="radiogroup"] { gap: 0.35rem; flex-wrap: wrap; }
+          div[role="radiogroup"] {
+              gap: 0.35rem;
+              flex-wrap: wrap;
+              margin-top: 0.25rem;
+          }
           /* Buttons inside columns fill their cell for easy thumb taps. */
           .stButton > button { width: 100%; }
           /* Trim the big default gap between stacked blocks a touch. */
@@ -1776,6 +1795,9 @@ def main() -> None:
     )
     _inject_mobile_css()
     args = _parse_args()
+
+    # When auth is configured, require sign-in before anything else renders.
+    auth.require_login()
 
     problem, config_path, logs_dir = _render_sidebar(args)
 
