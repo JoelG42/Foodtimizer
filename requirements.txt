@@ -1,10 +1,18 @@
 # Dependencies for hosted deployment (Streamlit Community Cloud reads this).
 # Installs the package itself plus the cloud extras (Streamlit, pandas,
-# SQLAlchemy, Postgres driver). Local dev can keep using `pip install -e .`.
+# SQLAlchemy, Postgres driver, Authlib). Local dev can keep using
+# `pip install -e .[cloud]`.
 -e .[cloud]
 
-# Core optimizer deps are declared in pyproject too, but pinned-ish here so
-# the cloud build is reproducible.
-numpy>=1.26
-scipy>=1.11
+# IMPORTANT: deploy on Streamlit Cloud with **Python 3.12** (set it in the
+# "Advanced settings" dialog when deploying). Python 3.14 installs pre-release
+# numpy/scipy/pandas binaries that segfault at startup.
+#
+# These native/binary libraries are pinned to stable versions that ship
+# prebuilt wheels for Python 3.12, so the build is reproducible.
+numpy>=1.26,<2.3
+scipy>=1.11,<1.15
+pandas>=2.0,<2.3
+sqlalchemy>=2.0,<2.1
+psycopg2-binary>=2.9,<2.10
 pyyaml>=6.0
