@@ -541,8 +541,9 @@ def _render_meal_card(
             )
 
         if allow_add:
-            with st.expander("➕ Add food"):
-                _render_slot_add_form(slot, log, logs_dir, ing_names)
+            # Inline (no expander) so tapping the food field is a single tap
+            # instead of "open expander, then tap the field".
+            _render_slot_add_form(slot, log, logs_dir, ing_names)
 
 
 def _render_meal_slots(
@@ -1070,14 +1071,15 @@ def _render_quick_ingredient_form(problem: Problem, config_path: str) -> None:
     tucked into an expander below for power editing on a larger screen.
     """
     names = sorted(i.name for i in real_ingredients(problem))
-    _NEW = "➕ New ingredient…"
     with st.container(border=True):
         target = st.selectbox(
-            "Add new or edit existing",
-            options=[_NEW] + names,
+            "Search an ingredient to edit (leave blank to add a new one)",
+            options=names,
+            index=None,
+            placeholder="Search ingredients…  (blank = add new)",
             key="quick_ing_target",
         )
-        editing = None if target == _NEW else problem.ingredient_by_name(target)
+        editing = problem.ingredient_by_name(target) if target else None
         existing_bound = problem.bounds.get(target) if editing else None
 
         with st.form("quick_ingredient", clear_on_submit=False):
