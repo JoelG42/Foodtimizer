@@ -28,15 +28,18 @@ from foodtimizer import auth
 from foodtimizer import storage as store
 from foodtimizer.config import _problem_from_dict, load_problem, problem_to_dict
 from foodtimizer.editor import (
+    DEFAULT_MACROS,
     INGREDIENT_BOUND_FIELDS,
     all_macro_keys,
     delete_ingredient,
     delete_meal,
     delete_recipe,
+    delete_target,
     real_ingredients,
     upsert_ingredient,
     upsert_meal,
     upsert_recipe,
+    upsert_target,
 )
 from foodtimizer.model import (
     Ingredient,
@@ -1050,6 +1053,101 @@ _BOUND_HELP: dict[str, str] = {
 }
 
 
+_GOAL_LABELS: dict[str, str] = {
+    "kcal": "Calories (kcal)",
+    "protein": "Protein (g)",
+    "carbs": "Carbs (g)",
+    "fat": "Fat (g)",
+    "fibre": "Fibre (g)",
+}
+
+
+def _render_goals_page(problem: Problem, config_path: str) -> None:
+    """Edit the daily macro goals the tracker and optimizer aim for."""
+    st.title("🎯 Goals")
+    st.caption(
+        "Set your daily targets. The tracker measures progress against these, "
+        "and the optimizer plans meals to hit them."
+    )
+
+    # A target only loads if its macro exists on some ingredient, so offer
+    # exactly those macros (defaults first, then any custom ones).
+    present = {k for ing in problem.ingredients for k in ing.macros}
+    ordered = [m for m in DEFAULT_MACROS if m in present]
+    extras = sorted(m for m in present if m not in DEFAULT_MACROS)
+    macros = ordered + extras
+    by_name = {t.name: t for t in problem.targets}
+
+    if not macros:
+        st.info(
+            "Add some ingredients first — goals track the macros your foods "
+            "provide."
+        )
+        return
+
+    with st.container(border=True):
+        with st.form("goals_form", clear_on_submit=False):
+            entered: dict[str, float] = {}
+            cols = st.columns(2)
+            for i, m in enumerate(macros):
+                existing = by_name.get(m)
+                default = 0.0
+                if existing is not None:
+                    default = float(
+                        existing.value
+                        if existing.value is not None
+                        else (existing.lower or existing.upper or 0.0)
+                    )
+                label = _GOAL_LABELS.get(m, m)
+                step = 10.0 if m == "kcal" else 1.0
+                entered[m] = cols[i % 2].number_input(
+                    label,
+                    min_value=0.0,
+                    step=step,
+                    value=default,
+                    key=f"goal_{m}",
+                )
+            st.caption(
+                "Tip: set a macro to 0 to stop tracking it (keep at least one goal)."
+            )
+            save = st.form_submit_button(
+                "💾 Save goals", use_container_width=True, type="primary"
+            )
+
+        if save:
+            positive = {m: v for m, v in entered.items() if v and v > 0}
+            if not positive:
+                st.warning("Enter at least one goal greater than 0.")
+                return
+
+            new_problem = problem
+            # Upsert the positive goals first (preserving each target's
+            # priority/min/max), then remove any the user zeroed out.
+            for m, v in positive.items():
+                existing = by_name.get(m)
+                try:
+                    new_problem = upsert_target(
+                        new_problem,
+                        m,
+                        value=float(v),
+                        weight=existing.weight if existing else None,
+                        lower=existing.lower if existing else None,
+                        upper=existing.upper if existing else None,
+                        hard=existing.hard if existing else None,
+                    )
+                except ValueError as e:
+                    st.error(str(e))
+                    return
+            for m in entered:
+                if m not in positive and by_name.get(m) is not None:
+                    try:
+                        new_problem = delete_target(new_problem, m)
+                    except ValueError as e:
+                        st.error(str(e))
+                        return
+            _persist_problem(new_problem, config_path, "Saved goals")
+
+
 def _render_ingredients_page(problem: Problem, config_path: str) -> None:
     """Editable ingredient database: macros per 100 g + optional bounds."""
     st.title("🥕 Ingredient database")
@@ -1742,6 +1840,7 @@ def _render_tracker_page(problem: Problem, logs_dir: str) -> None:
 
 
 _PAGE_TRACKER = "🍽️ Tracker"
+_PAGE_GOALS = "🎯 Goals"
 _PAGE_INGREDIENTS = "🥕 Ingredients"
 _PAGE_RECIPES = "🍰 Recipes"
 _PAGE_MEALS = "📖 Meals"
@@ -1811,13 +1910,21 @@ def main() -> None:
     # (the sidebar is collapsed behind the hamburger on small screens).
     page = st.radio(
         "Navigate",
-        options=[_PAGE_TRACKER, _PAGE_INGREDIENTS, _PAGE_RECIPES, _PAGE_MEALS],
+        options=[
+            _PAGE_TRACKER,
+            _PAGE_GOALS,
+            _PAGE_INGREDIENTS,
+            _PAGE_RECIPES,
+            _PAGE_MEALS,
+        ],
         key="nav_page",
         horizontal=True,
         label_visibility="collapsed",
     )
 
-    if page == _PAGE_INGREDIENTS:
+    if page == _PAGE_GOALS:
+        _render_goals_page(problem, config_path)
+    elif page == _PAGE_INGREDIENTS:
         _render_ingredients_page(problem, config_path)
     elif page == _PAGE_RECIPES:
         _render_recipes_page(problem, config_path)

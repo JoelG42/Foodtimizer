@@ -20,6 +20,7 @@ from .model import (
     Ingredient,
     IngredientBound,
     LibraryMeal,
+    MacroTarget,
     MealIngredient,
     Problem,
     Recipe,
@@ -99,6 +100,54 @@ def upsert_ingredient(
     if old != name:
         new_problem = _rename_ingredient_in_meals(new_problem, old, name)
     return new_problem
+
+
+def upsert_target(
+    problem: Problem,
+    name: str,
+    *,
+    value: float | None = None,
+    weight: float | None = None,
+    lower: float | None = None,
+    upper: float | None = None,
+    hard: bool | None = None,
+    original_name: str | None = None,
+) -> Problem:
+    """Add or update a macro target (daily goal).
+
+    When updating an existing target, ``weight``/``hard`` are preserved unless
+    overridden. A target needs at least one of ``value``/``lower``/``upper``.
+    Note: the config only loads if the macro exists on some ingredient — the
+    UI enforces that, but callers should too.
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("Target macro name cannot be empty.")
+    old = (original_name or name).strip()
+    existing = next((t for t in problem.targets if t.name == old), None)
+
+    new_target = MacroTarget(
+        name=name,
+        value=value,
+        weight=weight if weight is not None else (existing.weight if existing else 1.0),
+        hard=hard if hard is not None else (existing.hard if existing else False),
+        lower=lower,
+        upper=upper,
+    )
+    if new_target.value is None and new_target.lower is None and new_target.upper is None:
+        raise ValueError(f"Target {name!r} needs a goal value (or a min/max).")
+
+    kept = [t for t in problem.targets if t.name not in {name, old}]
+    kept.append(new_target)
+    return replace(problem, targets=tuple(kept))
+
+
+def delete_target(problem: Problem, name: str) -> Problem:
+    """Remove a macro target. Raises if it's the last remaining one."""
+    remaining = tuple(t for t in problem.targets if t.name != name)
+    if not remaining:
+        raise ValueError("You must keep at least one goal.")
+    return replace(problem, targets=remaining)
 
 
 def delete_ingredient(problem: Problem, name: str) -> Problem:
