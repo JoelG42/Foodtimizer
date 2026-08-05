@@ -18,11 +18,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "sqlalchemy>=2.0"]
 llm = ["openai>=1.0"]
-app = ["streamlit>=1.42", "pandas>=2.0"]
+app = ["streamlit>=1.42,<1.61", "pandas>=2.0"]
 # Cloud deployment (e.g. Streamlit Community Cloud) with a hosted database
-# and multi-user OIDC sign-in (Authlib powers st.login).
+# and multi-user OIDC sign-in (Authlib powers st.login). Streamlit is capped
+# below 1.61 to avoid a startup crash from its gzip middleware being
+# incompatible with newer Starlette (missing `thread_minimum_size`).
 cloud = [
-    "streamlit>=1.42",
+    "streamlit>=1.42,<1.61",
     "pandas>=2.0",
     "sqlalchemy>=2.0",
     "psycopg2-binary>=2.9",

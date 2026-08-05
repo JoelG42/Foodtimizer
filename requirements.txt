@@ -1,15 +1,19 @@
 # Dependencies for hosted deployment (Streamlit Community Cloud reads this).
-# Installs the package itself plus the cloud extras (Streamlit, pandas,
-# SQLAlchemy, Postgres driver, Authlib). Local dev can keep using
-# `pip install -e .[cloud]`.
+# Installs the package plus the cloud extras (pandas, SQLAlchemy, Postgres
+# driver, Authlib). Local dev can keep using `pip install -e .[cloud]`.
 -e .[cloud]
 
-# IMPORTANT: deploy on Streamlit Cloud with **Python 3.12** (set it in the
-# "Advanced settings" dialog when deploying). Python 3.14 installs pre-release
-# numpy/scipy/pandas binaries that segfault at startup.
-#
-# These native/binary libraries are pinned to stable versions that ship
-# prebuilt wheels for Python 3.12, so the build is reproducible.
+# IMPORTANT: deploy on Streamlit Cloud with **Python 3.12** (Advanced settings).
+# Python 3.14 ships pre-release numpy/scipy/pandas binaries that segfault.
+
+# Pin Streamlit + Starlette to a known-good pair. Streamlit 1.61.0 crashes at
+# startup when paired with starlette 1.4.0: Starlette's GZipResponder now
+# requires a `thread_minimum_size` argument that Streamlit 1.61.0 fails to
+# pass (TypeError in the gzip middleware). 1.59.1 + starlette 1.3.1 is stable.
+streamlit==1.59.1
+starlette==1.3.1
+
+# Native/binary libraries pinned to stable versions with Python 3.12 wheels.
 numpy>=1.26,<2.3
 scipy>=1.11,<1.15
 pandas>=2.0,<2.3
