@@ -430,6 +430,101 @@ _MEAL_SLOTS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _render_weight_input(log: DayLog) -> None:
+    """Save or clear the selected day's body weight."""
+    with st.container(border=True):
+        if log.weight_kg is None:
+            st.markdown("**Body weight** · not logged")
+        else:
+            st.markdown(f"**Body weight** · {log.weight_kg:.1f} kg")
+        with st.form(f"weight_{log.log_date.isoformat()}", clear_on_submit=False):
+            kg = st.number_input(
+                "Kilograms",
+                min_value=0.0,
+                max_value=400.0,
+                value=log.weight_kg,
+                step=0.1,
+                format="%.1f",
+                placeholder="kg",
+            )
+            save_col, clear_col = st.columns(2)
+            save = save_col.form_submit_button("Save weight", use_container_width=True)
+            clear = clear_col.form_submit_button("Clear", use_container_width=True)
+        if save:
+            if not kg or kg <= 0:
+                st.warning("Enter a weight above 0 kg.")
+                return
+            _save_day(log.with_weight(float(kg)))
+            st.toast(f"Saved {kg:.1f} kg", icon="✅")
+            st.rerun()
+        if clear:
+            _save_day(log.with_weight(None))
+            st.toast("Cleared weight for this day")
+            st.rerun()
+
+
+def _weight_points() -> list[tuple[date, float]]:
+    """Every stored weigh-in, oldest first. Days without a weight are skipped."""
+    points: list[tuple[date, float]] = []
+    for on_date in sorted(store.logged_dates()):
+        log = _load_day(on_date)
+        if log.weight_kg is not None:
+            points.append((on_date, log.weight_kg))
+    return points
+
+
+def _render_weight_page() -> None:
+    """Log a weigh-in and chart it with a 5- or 7-day average."""
+    from foodtimizer.tracker import rolling_average
+
+    st.title("⚖️ Weight")
+    st.caption("Log your body weight for the selected day. The chart uses every day you have saved.")
+
+    sel_date = _render_date_picker()
+    _render_weight_input(_load_day(sel_date))
+
+    points = _weight_points()
+    if not points:
+        st.info("Save a weight and it will show up on the chart.")
+        return
+
+    window = st.radio(
+        "Rolling average",
+        options=[7, 5],
+        format_func=lambda n: f"{n}-day average",
+        horizontal=True,
+        key="weight_avg_window",
+    )
+    weights = [kg for _, kg in points]
+    averages = rolling_average(weights, int(window))
+    latest_avg = next((a for a in reversed(averages) if a is not None), None)
+
+    cols = st.columns(3)
+    cols[0].metric("Latest", f"{points[-1][1]:.1f} kg")
+    if len(points) >= 2:
+        cols[1].metric("Since first log", f"{points[-1][1] - points[0][1]:+.1f} kg")
+    else:
+        cols[1].metric("Since first log", "—")
+    cols[2].metric(
+        f"{window}-day average",
+        f"{latest_avg:.1f} kg" if latest_avg is not None else "—",
+    )
+
+    avg_col = f"{window}-day avg"
+    frame = pd.DataFrame(
+        {
+            "date": [d for d, _ in points],
+            "weight (kg)": weights,
+            avg_col: averages,
+        }
+    )
+    st.line_chart(frame, x="date", y=["weight (kg)", avg_col])
+    st.caption(
+        f"Each point is one weigh-in. The average is the mean of the last {window} "
+        f"weigh-ins, so it starts once you have {window} entries."
+    )
+
+
 def _load_day(on_date: date) -> DayLog:
     """Load a day's log from the active storage backend."""
     return daylog_from_data(on_date, store.load_day(on_date))
@@ -1814,6 +1909,8 @@ def _render_tracker_page(problem: Problem, logs_dir: str) -> None:
     totals = compute_totals(log, ingredient_map)
     _render_dashboard(problem, totals)
 
+    _render_weight_input(log)
+
     st.markdown("### Meals")
     _render_meal_slots(log, logs_dir, ingredient_map, macros)
 
@@ -1840,6 +1937,7 @@ def _render_tracker_page(problem: Problem, logs_dir: str) -> None:
 
 
 _PAGE_TRACKER = "🍽️ Tracker"
+_PAGE_WEIGHT = "⚖️ Weight"
 _PAGE_GOALS = "🎯 Goals"
 _PAGE_INGREDIENTS = "🥕 Ingredients"
 _PAGE_RECIPES = "🍰 Recipes"
@@ -1912,6 +2010,7 @@ def main() -> None:
         "Navigate",
         options=[
             _PAGE_TRACKER,
+            _PAGE_WEIGHT,
             _PAGE_GOALS,
             _PAGE_INGREDIENTS,
             _PAGE_RECIPES,
@@ -1922,7 +2021,9 @@ def main() -> None:
         label_visibility="collapsed",
     )
 
-    if page == _PAGE_GOALS:
+    if page == _PAGE_WEIGHT:
+        _render_weight_page()
+    elif page == _PAGE_GOALS:
         _render_goals_page(problem, config_path)
     elif page == _PAGE_INGREDIENTS:
         _render_ingredients_page(problem, config_path)

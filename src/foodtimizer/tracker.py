@@ -9,6 +9,7 @@ The on-disk shape is intentionally simple and human-editable::
 
     {
       "date": "2026-05-18",
+      "weight_kg": 78.4,
       "entries": [
         {"ingredient": "chicken_breast", "grams": 150,
          "slot": "lunch", "note": null, "eaten_at": "2026-05-18T13:30:00"},
@@ -78,6 +79,7 @@ class DayLog:
 
     log_date: date
     entries: tuple[LogEntry, ...] = field(default_factory=tuple)
+    weight_kg: float | None = None
 
     def with_added(self, entry: LogEntry) -> "DayLog":
         return replace(self, entries=self.entries + (entry,))
@@ -94,6 +96,12 @@ class DayLog:
             self,
             entries=self.entries[:index] + (entry,) + self.entries[index + 1 :],
         )
+
+    def with_weight(self, kg: float | None) -> "DayLog":
+        """Set or clear the day's body weight in kilograms."""
+        if kg is not None and kg <= 0:
+            raise ValueError("Body weight must be greater than zero.")
+        return replace(self, weight_kg=None if kg is None else float(kg))
 
 
 def compute_totals(
@@ -135,16 +143,21 @@ def daylog_to_data(log: DayLog) -> dict[str, Any]:
     """Serialize a day log to the plain dict shape used on disk / in the DB."""
     return {
         "date": log.log_date.isoformat(),
+        "weight_kg": log.weight_kg,
         "entries": [e.to_dict() for e in log.entries],
     }
 
 
 def daylog_from_data(on_date: date, data: Mapping[str, Any] | None) -> DayLog:
     """Rebuild a :class:`DayLog` from stored data (``None`` -> empty day)."""
-    entries_raw = (data or {}).get("entries", []) or []
+    raw = data or {}
+    entries_raw = raw.get("entries", []) or []
+    raw_weight = raw.get("weight_kg")
+    weight = float(raw_weight) if raw_weight is not None else None
     return DayLog(
         log_date=on_date,
         entries=tuple(LogEntry.from_dict(e) for e in entries_raw),
+        weight_kg=weight,
     )
 
 
@@ -159,21 +172,14 @@ def load_day_log(logs_dir: Path | str, on_date: date) -> DayLog:
     if not path.exists():
         return DayLog(log_date=on_date)
     data = json.loads(path.read_text(encoding="utf-8"))
-    entries_raw = data.get("entries", []) or []
-    return DayLog(
-        log_date=on_date,
-        entries=tuple(LogEntry.from_dict(e) for e in entries_raw),
-    )
+    return daylog_from_data(on_date, data)
 
 
 def save_day_log(logs_dir: Path | str, log: DayLog) -> Path:
     """Atomically write ``log`` to disk, creating directories as needed."""
     path = log_path(logs_dir, log.log_date)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {
-        "date": log.log_date.isoformat(),
-        "entries": [e.to_dict() for e in log.entries],
-    }
+    data = daylog_to_data(log)
     # Atomic write: serialize to a sibling tempfile then rename. Prevents
     # half-written JSON if Streamlit reruns mid-write or the process dies.
     # Using ``with_name`` instead of ``with_suffix`` keeps this safe across
@@ -228,6 +234,37 @@ def make_entry(
         note=(note or None),
         eaten_at=eaten_at or now_iso(),
     )
+
+
+def load_weight_history(logs_dir: Path | str) -> list[tuple[date, float]]:
+    """Body-weight points from every day log, oldest first.
+
+    Days with no ``weight_kg`` are skipped.
+    """
+    points: list[tuple[date, float]] = []
+    for on_date in sorted(list_logged_dates(logs_dir)):
+        log = load_day_log(logs_dir, on_date)
+        if log.weight_kg is not None:
+            points.append((on_date, log.weight_kg))
+    return points
+
+
+def rolling_average(values: list[float], window: int) -> list[float | None]:
+    """Trailing mean of ``window`` weigh-ins, aligned to each value.
+
+    The first ``window - 1`` positions are ``None``. ``values`` must already
+    be in chronological order.
+    """
+    if window < 1:
+        raise ValueError("window must be at least 1")
+    out: list[float | None] = []
+    for i in range(len(values)):
+        if i + 1 < window:
+            out.append(None)
+            continue
+        chunk = values[i + 1 - window : i + 1]
+        out.append(sum(chunk) / window)
+    return out
 
 
 def bulk_add(log: DayLog, entries: Iterable[LogEntry]) -> DayLog:

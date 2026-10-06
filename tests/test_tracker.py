@@ -19,8 +19,12 @@ from foodtimizer.tracker import (
     bulk_add,
     compute_totals,
     list_logged_dates,
+    daylog_from_data,
+    daylog_to_data,
     load_day_log,
+    load_weight_history,
     make_entry,
+    rolling_average,
     save_day_log,
     unknown_ingredients,
 )
@@ -166,6 +170,30 @@ def test_make_entry_auto_stamps_eaten_at():
 def test_make_entry_uses_explicit_timestamp_when_given():
     e = make_entry("chicken", 100, eaten_at="2026-05-18T10:00:00")
     assert e.eaten_at == "2026-05-18T10:00:00"
+
+
+def test_weight_roundtrip_and_old_logs(tmp_path):
+    log = DayLog(log_date=date(2026, 5, 18)).with_weight(78.4)
+    assert daylog_from_data(log.log_date, daylog_to_data(log)).weight_kg == pytest.approx(78.4)
+    save_day_log(tmp_path, log)
+    assert load_day_log(tmp_path, date(2026, 5, 18)).weight_kg == pytest.approx(78.4)
+
+    (tmp_path / "2026-05-17.json").write_text(
+        json.dumps({"date": "2026-05-17", "entries": []}),
+        encoding="utf-8",
+    )
+    assert load_day_log(tmp_path, date(2026, 5, 17)).weight_kg is None
+    assert load_weight_history(tmp_path) == [(date(2026, 5, 18), 78.4)]
+
+
+def test_with_weight_rejects_non_positive():
+    with pytest.raises(ValueError):
+        DayLog(log_date=date(2026, 5, 18)).with_weight(0)
+
+
+def test_rolling_average_waits_for_full_window():
+    values = [80.0, 81.0, 79.0, 78.0, 77.0]
+    assert rolling_average(values, 5) == [None, None, None, None, 79.0]
 
 
 def test_bulk_add_preserves_order():
