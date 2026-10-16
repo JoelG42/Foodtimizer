@@ -13,9 +13,9 @@ isolated data via :func:`current_namespace`.
 
 from __future__ import annotations
 
-import re
-
 import streamlit as st
+
+from .identity import namespace_for_subject
 
 
 def auth_configured() -> bool:
@@ -66,7 +66,7 @@ def current_namespace() -> str | None:
         raw = current_email()
     if not raw:
         return None
-    return "u_" + re.sub(r"[^A-Za-z0-9]", "_", str(raw))[:80]
+    return namespace_for_subject(str(raw))
 
 
 def require_login() -> None:

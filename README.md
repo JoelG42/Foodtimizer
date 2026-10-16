@@ -199,6 +199,32 @@ Arbitrary slot names (e.g. multiple snacks):
 foodtimizer examples/day.yaml --slot snack_pm=protein_shake --slot snack_late=almonds_apple
 ```
 
+## Phone API
+
+A separate HTTP API for a future App Store client. The Streamlit tracker is
+unchanged, and this API is not part of the Streamlit Cloud install.
+
+```powershell
+pip install -e ".[api]"
+$env:FOODTIMIZER_API_SECRET = "replace-with-a-long-random-string"
+$env:FOODTIMIZER_DEV_AUTH = "1"
+foodtimizer-api
+```
+
+`FOODTIMIZER_DEV_AUTH=1` turns on `POST /v1/auth/dev-login`, which takes
+`{"sub": "<account id>"}` and returns a bearer token. Use the same `sub` as
+the Streamlit Google account when you want the phone API to read that
+account's logs. Send the token as `Authorization: Bearer ...` to:
+
+- `GET /v1/days/YYYY-MM-DD` and `POST /v1/days/YYYY-MM-DD/entries`
+- `GET /v1/ingredients?q=`
+- `GET /v1/goals` and `PUT /v1/goals`
+- `GET /v1/weight` and `PUT /v1/days/YYYY-MM-DD/weight`
+
+With no `DATABASE_URL`, data is stored in local files (`FOODTIMIZER_CONFIG`,
+`FOODTIMIZER_LOGS_DIR`). To use the hosted database, install
+`pip install -e ".[api,cloud]"` and set `DATABASE_URL` to the Neon URL.
+
 ## Config
 
 See `examples/day.yaml` for a full annotated example. Sketch:
