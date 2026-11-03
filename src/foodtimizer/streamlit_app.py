@@ -15,6 +15,7 @@ entries, see macro totals against the targets defined in the config.
 from __future__ import annotations
 
 import argparse
+import html
 import math
 import os
 from dataclasses import replace
@@ -598,6 +599,52 @@ def _render_slot_add_form(
     st.rerun()
 
 
+# Shown on the right of every meal card header. There is no oil-bottle emoji
+# in Unicode, so fat uses the olive.
+_MEAL_HEADER_MACROS: tuple[tuple[str, str], ...] = (
+    ("protein", "🥩"),
+    ("carbs", "🌾"),
+    ("fat", "🫒"),
+)
+
+
+def _slot_macro_totals(
+    indexed_entries: list[tuple[int, LogEntry]],
+    ingredient_map: dict[str, Ingredient],
+) -> dict[str, float]:
+    """kcal and header macros for one meal. Unknown ingredients count as 0."""
+    totals = {"kcal": 0.0, **{m: 0.0 for m, _ in _MEAL_HEADER_MACROS}}
+    for _, entry in indexed_entries:
+        ing = ingredient_map.get(entry.ingredient)
+        if ing is None:
+            continue
+        for macro in totals:
+            totals[macro] += entry.grams * ing.amount_for(macro) / 100.0
+    return totals
+
+
+def _meal_header_html(label: str, totals: dict[str, float]) -> str:
+    """Meal name on the left, kcal and macros on the right, in one row.
+
+    A single flex row (rather than ``st.columns``) so the totals stay beside
+    the name on a phone, where Streamlit stacks columns vertically.
+    """
+    macro_line = "&nbsp;&nbsp;".join(
+        f"{emoji}&nbsp;{totals.get(macro, 0.0):.0f}g"
+        for macro, emoji in _MEAL_HEADER_MACROS
+    )
+    return f"""
+<div style="display:flex;justify-content:space-between;align-items:center;
+            gap:0.5rem;margin:0.1rem 0 0.35rem;">
+  <div style="font-size:1.25rem;font-weight:700;white-space:nowrap;">{html.escape(label)}</div>
+  <div style="text-align:right;line-height:1.25;">
+    <div style="font-weight:700;opacity:0.85;">{totals.get("kcal", 0.0):.0f} kcal</div>
+    <div style="font-size:0.82rem;opacity:0.7;white-space:nowrap;">{macro_line}</div>
+  </div>
+</div>
+"""
+
+
 def _render_meal_card(
     slot: str,
     label: str,
@@ -610,21 +657,11 @@ def _render_meal_card(
     *,
     allow_add: bool = True,
 ) -> None:
-    """A single meal card: header with kcal, logged items, and add-food."""
-    slot_kcal = 0.0
-    for _, e in indexed_entries:
-        ing = ingredient_map.get(e.ingredient)
-        if ing is not None:
-            slot_kcal += e.grams * ing.amount_for("kcal") / 100.0
+    """A single meal card: header with totals, logged items, and add-food."""
+    totals = _slot_macro_totals(indexed_entries, ingredient_map)
 
     with st.container(border=True):
-        h_label, h_kcal = st.columns([3, 1])
-        h_label.markdown(f"#### {label}")
-        h_kcal.markdown(
-            f"<div style='text-align:right;font-weight:700;opacity:0.75;"
-            f"padding-top:0.55rem;'>{slot_kcal:.0f} kcal</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(_meal_header_html(label, totals), unsafe_allow_html=True)
 
         if not indexed_entries:
             st.caption("Nothing logged yet.")
