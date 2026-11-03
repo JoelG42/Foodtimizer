@@ -1,6 +1,10 @@
 # Dependencies for hosted deployment (Streamlit Community Cloud reads this).
 # Installs the package plus the cloud extras (pandas, SQLAlchemy, Postgres
 # driver, Authlib). Local dev can keep using `pip install -e .[cloud]`.
+#
+# Do not add the phone API here. It lives in the optional `api` extra
+# (`pip install -e ".[api]"`) so a Cloud rebuild of the daily tracker
+# cannot pick it up.
 -e .[cloud]
 
 # IMPORTANT: deploy on Streamlit Cloud with **Python 3.12** (Advanced settings).
